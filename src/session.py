@@ -23,13 +23,19 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import yaml
 
-from checkpoint import CheckpointManager, config_hash
+from checkpoint import (
+    CheckpointManager,
+    TrainingState,
+    atomic_write_json,
+    config_hash,
+)
 from presigned_io import (
     EXIT_MANIFEST_UNUSABLE,
     EXIT_PRESIGNED_EXPIRED,
@@ -50,6 +56,7 @@ class Session:
         self.repo_root = repo_root
         self.input_root = input_root
         self.run_id = run_id
+        self.session_id = uuid.uuid4().hex[:12]
         self.base = f"{io.manifest.run_id or run_id}"
         self.prefix = self._detect_prefix()
 
@@ -73,6 +80,43 @@ class Session:
             return None
         return self.io.get_json(remote)
 
+    def publish_phase(self, phase: str) -> None:
+        """Record that the pipeline has reached `phase`, and upload it.
+
+        The absence of training_state.json is what "prepare" means -- PHASES
+        starts at "shap" for exactly that reason -- so this file appearing is
+        the only way the pipeline can leave preparation. Nothing wrote it
+        except train.py, and train.py is reachable only from final_train, so
+        the phase could never advance: every session prepared the data again,
+        and the next session started from prepare once more.
+
+        An existing state is edited rather than replaced, so a phase written
+        here can never discard the epoch counter a resumed training run
+        depends on.
+        """
+        directory = self.work / "checkpoints"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "training_state.json"
+
+        if path.exists():
+            with path.open(encoding="utf-8") as handle:
+                payload = json.load(handle)
+            payload["phase"] = phase
+            state = TrainingState(**payload)
+        else:
+            state = TrainingState(
+                run_id=self.run_id,
+                session_id=self.session_id,
+                dataset_name=self.experiment["run"]["dataset"],
+                phase=phase,
+                total_epochs=self.experiment["training"]["epochs"],
+                config_hash=config_hash(self.experiment),
+            )
+
+        atomic_write_json(path, state.to_dict())
+        self.io.upload(path, self.key("checkpoints/training_state.json"))
+        print(f"phase recorded: {phase}")
+
     def current_phase(self) -> str:
         state = self.load_remote_state()
         if state is None:
@@ -86,22 +130,36 @@ class Session:
 
     # -- download ---------------------------------------------------------
     def pull_cache(self) -> bool:
-        """Fetch the preprocessing cache. False means it is not there yet."""
-        marker = self.key("cache/selected_features.json")
-        shards = [k for k in self.io.manifest.entries
-                  if "/cache/preprocess/" in k and self.io.manifest.exists(k)]
-        if not shards:
-            return False
+        """Make the preprocessing cache available. False means it is not there yet.
 
-        cache = self.work / "cache"
-        for key in shards:
-            self.io.download(key, cache / "preprocess" / key.rsplit("/", 1)[1])
+        True means the preprocessing shards are usable, which is what every
+        later phase actually needs. It used to be keyed on
+        selected_features.json instead -- a file SHAP itself produces -- so
+        the SHAP phase demanded its own output before it was allowed to run.
+
+        Local files win over the manifest. The manifest is a snapshot taken
+        before the session started, so a cache this same session has just
+        built and uploaded is invisible to it.
+        """
+        cache = self.work / 'cache'
+        shard_dir = cache / 'preprocess'
+        local = sorted(shard_dir.glob('*')) if shard_dir.is_dir() else []
+
+        if not local:
+            shards = [k for k in self.io.manifest.entries
+                      if "/cache/preprocess/" in k and self.io.manifest.exists(k)]
+            if not shards:
+                return False
+            for key in shards:
+                self.io.download(key, shard_dir / key.rsplit("/", 1)[1])
+
         for name in ("scaler.joblib", "selected_features.json"):
             self.io.download_if_present(self.key(f"cache/{name}"), cache / name)
         for name in ("preprocessing.json", "split_assignment.npy", "file_offsets.json",
                      "split_manifest.json"):
             self.io.download_if_present(self.key(f"config/{name}"), self.work / "config" / name)
-        return self.io.manifest.exists(marker) or (cache / "selected_features.json").exists()
+
+        return bool(local) or any(shard_dir.glob('*'))
 
     def pull_checkpoints(self) -> None:
         for name in ("model_last.pt", "optimizer_last.pt", "rng_state.pt",
@@ -253,6 +311,12 @@ def _versions() -> Dict[str, str]:
     return versions
 
 
+def next_phase(phase: str) -> str:
+    """The phase that follows, stopping at the end of the order."""
+    index = PHASE_ORDER.index(phase)
+    return PHASE_ORDER[min(index + 1, len(PHASE_ORDER) - 1)]
+
+
 PHASE_HANDLERS: Dict[str, Callable[[Session], None]] = {
     "prepare": Session.phase_prepare,
     "shap": Session.phase_shap,
@@ -272,8 +336,9 @@ def run_session(manifest_url: str, work_dir: Path, repo_root: Path,
     session = Session(io, work_dir, repo_root, input_root, run_id)
     session.write_run_config()
 
+    phase = session.current_phase()
+
     for _ in range(max_phases):
-        phase = session.current_phase()
         print(f"\n{'=' * 60}\nphase: {phase}\n{'=' * 60}")
 
         if phase in ("evaluate", "done"):
@@ -292,6 +357,14 @@ def run_session(manifest_url: str, work_dir: Path, repo_root: Path,
             if state and state.status == "RESUME_REQUIRED":
                 print("session budget reached; checkpoint uploaded, exiting cleanly")
                 return 0
+
+        # Advance locally. current_phase() consults the manifest, which is a
+        # snapshot minted before this session began and so cannot see anything
+        # uploaded since -- asking it again here would hand back the phase that
+        # has only just been finished, and the session would repeat it.
+        phase = next_phase(phase)
+        if phase in PHASE_HANDLERS:
+            session.publish_phase(phase)
 
     return 0
 
