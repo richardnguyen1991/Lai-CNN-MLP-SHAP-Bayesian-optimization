@@ -129,10 +129,23 @@ class Session:
         import preprocessing
         import split
 
+        dataset = self.experiment["run"]["dataset"]
+        pattern = data_audit.load_dataset_config(
+            self.repo_root, dataset).get("input_glob", "*.parquet")
+
+        # Resolve once, here, and hand the same root to all three stages. Each
+        # of them keys a file by its path relative to this root, so resolving
+        # separately per stage would quietly produce three different sets of
+        # identities out of one dataset.
+        resolved = data_audit.resolve_input_root(self.input_root, pattern)
+        if resolved != self.input_root:
+            print(f"input root resolved to {resolved}
+"
+                  f"  (configured {self.input_root}; the mount layout differs)")
+        self.input_root = resolved
+
         config_dir = self.work / "config"
-        code = data_audit.audit(
-            self.experiment["run"]["dataset"], self.input_root, config_dir, self.repo_root
-        )
+        code = data_audit.audit(dataset, self.input_root, config_dir, self.repo_root)
         if code != 0:
             raise RuntimeError("data_audit failed; see data_profile.json checks")
 

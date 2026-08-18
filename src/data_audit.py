@@ -27,7 +27,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
+import os
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -123,37 +125,83 @@ def load_dataset_config(repo_root: Path, dataset: str) -> Dict[str, Any]:
         return yaml.safe_load(handle)
 
 
-def describe_input_root(input_root: Path) -> str:
-    """What is actually at the input path, for an error that can be acted on.
+def first_existing_ancestor(path: Path) -> Optional[Path]:
+    for candidate in (path, *path.parents):
+        if candidate.is_dir():
+            return candidate
+    return None
 
-    On Kaggle a missing input directory almost always means the dataset was not
-    attached to the kernel, and the bare "no files matching" message gives no
-    way to tell that from a wrong glob or a nested layout.
+
+def describe_input_root(input_root: Path, limit: int = 30) -> str:
+    """What is actually at or near the input path, for an error that can be acted on.
+
+    A bare "no files matching" cannot distinguish a dataset that never attached
+    to the kernel from one mounted somewhere else, and those need opposite fixes.
     """
     if input_root.is_dir():
         entries = sorted(child.name for child in input_root.iterdir())
         suffixes = sorted({child.suffix for child in input_root.rglob("*")
                            if child.is_file() and child.suffix})
-        return (f"{input_root} exists and contains {entries[:20]}"
-                f"{' ...' if len(entries) > 20 else ''}; "
+        return (f"{input_root} exists and contains {entries[:limit]}"
+                f"{' ...' if len(entries) > limit else ''}; "
                 f"file extensions present: {suffixes or 'none'}")
 
-    parent = input_root.parent
-    if parent.is_dir():
-        return (f"{input_root} does not exist; {parent} contains "
-                f"{sorted(child.name for child in parent.iterdir())}. "
-                "A Kaggle dataset mounts under its own slug, so this usually "
-                "means the dataset was not attached to the kernel.")
+    ancestor = first_existing_ancestor(input_root)
+    if ancestor is None:
+        return f"neither {input_root} nor any parent of it exists"
 
-    return f"neither {input_root} nor {parent} exists"
+    nested = []
+    for child in itertools.islice(ancestor.rglob("*"), 2000):
+        nested.append(child.relative_to(ancestor).as_posix())
+        if len(nested) >= limit:
+            break
+
+    return (f"{input_root} does not exist; the nearest existing directory "
+            f"{ancestor} contains {sorted(nested)}"
+            f"{' ...' if len(nested) >= limit else ''}. "
+            "A Kaggle dataset mounts under its own slug, so this usually means "
+            "the dataset was not attached to the kernel, or that the mount "
+            "layout has changed.")
+
+
+def resolve_input_root(input_root: Path, pattern: str) -> Path:
+    """The directory that actually holds the data files.
+
+    The configured path is a hint, not a guarantee. Kaggle moved its dataset
+    mounts out of /kaggle/input/<slug>, which turned a correct configuration
+    into a dead one without anything in the repository changing.
+
+    Resolution is deliberately confined to the configured path's nearest
+    existing ancestor, so this widens the search by exactly as much as the
+    mount moved and no further. The result is the deepest directory containing
+    every match, which keeps the capture-day directories inside the relative
+    paths -- those relative paths are the file identity that audit, split and
+    preprocessing all key on, so this must be resolved once and passed down
+    rather than recomputed per stage.
+    """
+    if any(p.is_file() for p in input_root.rglob(pattern)):
+        return input_root
+
+    ancestor = first_existing_ancestor(input_root)
+    if ancestor is None or ancestor == input_root:
+        raise FileNotFoundError(f"no files matching {pattern!r} under {input_root}. "
+                                + describe_input_root(input_root))
+
+    matches = [p for p in ancestor.rglob(pattern) if p.is_file()]
+    if not matches:
+        raise FileNotFoundError(
+            f"no files matching {pattern!r} under {input_root}, nor anywhere "
+            f"below {ancestor}. " + describe_input_root(input_root))
+
+    return Path(os.path.commonpath([str(match.parent) for match in matches]))
 
 
 def discover_files(input_root: Path, pattern: str) -> List[Path]:
+    """Every data file under an already-resolved root."""
     files = sorted(p for p in input_root.rglob(pattern) if p.is_file())
     if not files:
-        raise FileNotFoundError(
-            f"no files matching {pattern!r} under {input_root}. "
-            + describe_input_root(input_root))
+        raise FileNotFoundError(f"no files matching {pattern!r} under {input_root}. "
+                                + describe_input_root(input_root))
     return files
 
 

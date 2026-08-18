@@ -236,6 +236,93 @@ def test_a_nested_layout_is_found_rather_than_reported_missing(tmp_path):
     assert discover_files(root, "*.parquet") == [target]
 
 
-def test_describe_handles_a_root_whose_parent_is_absent_too(tmp_path):
+def test_describe_walks_up_to_the_nearest_directory_that_is_there(tmp_path):
+    # Several levels can be missing at once, and the useful thing to report is
+    # the deepest one that does exist rather than the immediate parent.
     message = describe_input_root(tmp_path / "no" / "such" / "place")
-    assert "exists" in message
+    assert str(tmp_path) in message
+    assert "does not exist" in message
+
+
+# --------------------------------------------------------------------------
+# Resolving the mount point
+# --------------------------------------------------------------------------
+# Kaggle moved its dataset mounts out of /kaggle/input/<slug>. Nothing in the
+# repository changed, and a correct configuration became a dead one: the real
+# session reported "/kaggle/input contains ['datasets']".
+
+from data_audit import first_existing_ancestor, resolve_input_root  # noqa: E402
+
+
+def kaggle_layout(tmp_path):
+    """The mount as the failing session actually found it."""
+    root = tmp_path / "input"
+    data = (root / "datasets" / "dungnguyen28101991" / "cicddos2019-parquet"
+            / "versions" / "1" / "cicddos2019_parquet_preserved" / "data")
+    for day, name in (("01-12", "DrDoS_DNS"), ("01-12", "DrDoS_NTP"), ("03-11", "Syn")):
+        target = data / day / f"{name}.parquet"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"")
+    (data.parent / "README.txt").write_text("notes", encoding="utf-8")
+    return root, data
+
+
+def test_the_configured_root_is_kept_when_it_holds_the_data(tmp_path):
+    root = tmp_path / "input" / "cicddos2019-parquet"
+    (root / "01-12").mkdir(parents=True)
+    (root / "01-12" / "Syn.parquet").write_bytes(b"")
+
+    assert resolve_input_root(root, "*.parquet") == root
+
+
+def test_a_moved_mount_is_found_under_the_nearest_existing_ancestor(tmp_path):
+    root, data = kaggle_layout(tmp_path)
+    configured = root / "cicddos2019-parquet"          # does not exist
+    assert resolve_input_root(configured, "*.parquet") == data
+
+
+def test_the_resolved_root_keeps_the_capture_day_in_the_relative_path(tmp_path):
+    # The relative path is the file identity. Resolving one level too deep
+    # would drop the capture day and merge two files that share a name across
+    # the two capture days.
+    root, data = kaggle_layout(tmp_path)
+    resolved = resolve_input_root(root / "cicddos2019-parquet", "*.parquet")
+
+    relative = sorted(p.relative_to(resolved).as_posix()
+                      for p in resolved.rglob("*.parquet"))
+    assert relative == ["01-12/DrDoS_DNS.parquet",
+                        "01-12/DrDoS_NTP.parquet",
+                        "03-11/Syn.parquet"]
+
+
+def test_a_non_matching_file_does_not_drag_the_root_upwards(tmp_path):
+    # README.txt sits above the data directory; only the glob matches count.
+    root, data = kaggle_layout(tmp_path)
+    assert resolve_input_root(root / "cicddos2019-parquet", "*.parquet") == data
+
+
+def test_resolution_fails_when_nothing_matches_anywhere(tmp_path):
+    root = tmp_path / "input"
+    (root / "datasets").mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        resolve_input_root(root / "cicddos2019-parquet", "*.parquet")
+
+    assert "datasets" in str(excinfo.value)
+
+
+def test_resolution_does_not_search_outside_the_configured_ancestor(tmp_path):
+    # Widening the search by more than the mount moved could pick up an
+    # unrelated dataset and train on the wrong data without saying so.
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "other.parquet").write_bytes(b"")
+    configured = tmp_path / "input" / "cicddos2019-parquet"
+    configured.parent.mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError):
+        resolve_input_root(configured, "*.parquet")
+
+
+def test_first_existing_ancestor_walks_up_until_something_is_there(tmp_path):
+    assert first_existing_ancestor(tmp_path / "a" / "b" / "c") == tmp_path
+    assert first_existing_ancestor(tmp_path) == tmp_path
