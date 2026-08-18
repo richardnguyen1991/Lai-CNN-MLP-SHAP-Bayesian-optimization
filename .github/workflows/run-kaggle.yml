@@ -158,9 +158,19 @@ jobs:
 
       - name: Push and follow the kernel
         if: steps.state.outputs.finished != 'true' && steps.guard.outputs.busy != 'true'
+        id: push
         run: |
           kaggle kernels push -p build
           python scripts/poll_kernel.py --kernel "$KAGGLE_KERNEL" --timeout-minutes 730
+
+      - name: Show the kernel log
+        # A failed kernel's traceback lives on Kaggle, not in this log. Without
+        # this the workflow reports a bare "error" and every diagnosis costs a
+        # trip to the web UI -- which is how a missing input directory took two
+        # sessions to read.
+        if: always() && steps.push.outcome == 'failure'
+        continue-on-error: true
+        run: kaggle kernels logs "$KAGGLE_KERNEL"
 
       - name: Record the session and decide what happens next
         if: always() && steps.state.outputs.run_id != '' && steps.state.outputs.finished != 'true' && steps.guard.outputs.busy != 'true'
