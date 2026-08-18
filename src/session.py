@@ -139,9 +139,8 @@ class Session:
         # identities out of one dataset.
         resolved = data_audit.resolve_input_root(self.input_root, pattern)
         if resolved != self.input_root:
-            print(f"input root resolved to {resolved}
-"
-                  f"  (configured {self.input_root}; the mount layout differs)")
+            print(f"input root resolved to {resolved}")
+            print(f"  (configured {self.input_root}; the mount layout differs)")
         self.input_root = resolved
 
         config_dir = self.work / "config"
