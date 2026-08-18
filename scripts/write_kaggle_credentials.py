@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
+
+LEGACY_KEY = re.compile("[0-9a-f]{32}")
 
 
 def config_dir() -> Path:
@@ -69,9 +72,14 @@ def main() -> int:
     path.write_text(json.dumps(creds), encoding="utf-8")
     path.chmod(0o600)
 
-    # Never print the key. Its length is enough to tell a truncated secret from
-    # a plausible one, and GitHub masks the username anyway.
-    print(f"wrote {path} for user {creds['username']} (key length {len(creds['key'])})")
+    # Never print the key. Shape and length are enough to tell a plausible
+    # secret from the wrong kind of string, and GitHub masks the username.
+    key = creds["key"]
+    print(f"wrote {path} for user {creds['username']} (key length {len(key)})")
+    if not LEGACY_KEY.fullmatch(key):
+        print("warning: this does not look like a Kaggle API key, which is 32 "
+              "hex characters. Check the KAGGLE_API_TOKEN secret holds the "
+              '"key" field from kaggle.json and nothing else.')
     return 0
 
 

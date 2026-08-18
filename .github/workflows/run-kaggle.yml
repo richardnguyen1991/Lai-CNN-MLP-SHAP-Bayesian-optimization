@@ -90,9 +90,10 @@ jobs:
 
       - name: Verify Kaggle authentication
         # Fail here, naming the cause, rather than several steps later inside a
-        # kernel push whose only message is "authentication required".
+        # kernel push whose only message is "authentication required". The CLI
+        # reports auth errors on stdout, so nothing here may be redirected.
         run: |
-          kaggle kernels list -m --page-size 1 > /dev/null
+          kaggle kernels list -m --page-size 1
           echo "kaggle authentication ok"
 
       - name: Resolve run id and phase
@@ -151,7 +152,7 @@ jobs:
           python scripts/poll_kernel.py --kernel "$KAGGLE_KERNEL" --timeout-minutes 730
 
       - name: Record the session and decide what happens next
-        if: always() && steps.state.outputs.finished != 'true' && steps.guard.outputs.busy != 'true'
+        if: always() && steps.state.outputs.run_id != '' && steps.state.outputs.finished != 'true' && steps.guard.outputs.busy != 'true'
         id: after
         # Re-reads training_state.json. If the epoch advanced, the next cron run
         # continues; if it did not advance twice running, stop and raise an issue
