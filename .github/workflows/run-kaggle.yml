@@ -96,6 +96,17 @@ jobs:
           kaggle kernels list -m --page-size 1
           echo "kaggle authentication ok"
 
+      - name: Verify the dataset is reachable
+        # A kernel whose dataset failed to attach still starts, downloads the
+        # code, and only dies a couple of minutes later inside prepare with an
+        # empty input directory. Checking from here names the problem in
+        # seconds, and distinguishes "not accessible to this account" from
+        # "attached but laid out differently".
+        run: |
+          slug=$(python -c "import json; print(json.load(open('kernel-metadata.json'))['dataset_sources'][0])")
+          echo "dataset: $slug"
+          kaggle datasets files "$slug" --page-size 5
+
       - name: Resolve run id and phase
         id: state
         # Reads training_state.json from S3 to decide resume vs cold start, and

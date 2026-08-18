@@ -186,3 +186,56 @@ def test_audit_fails_on_unknown_label(tmp_path):
     code, profile = _run_audit(tmp_path, ["Normal"] * 50 + ["Mirai"] * 50)
     assert code == 2
     assert any("outside the configured mapping" in f for f in profile["checks"]["failures"])
+
+
+# --------------------------------------------------------------------------
+# Locating the input files
+# --------------------------------------------------------------------------
+# The first real Kaggle session died here, and the message named only what was
+# absent. On Kaggle the overwhelmingly likely cause is a dataset that never
+# attached to the kernel, which looks identical to a wrong glob until you can
+# see what is actually on disk.
+
+from data_audit import describe_input_root, discover_files  # noqa: E402
+
+
+def test_the_error_lists_what_is_there_when_the_glob_matches_nothing(tmp_path):
+    root = tmp_path / "input"
+    root.mkdir()
+    (root / "notes.csv").write_text("a,b", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        discover_files(root, "*.parquet")
+
+    message = str(excinfo.value)
+    assert "*.parquet" in message
+    assert "notes.csv" in message      # what is present, not only what is not
+    assert ".csv" in message
+
+
+def test_the_error_names_the_sibling_directories_when_the_root_is_absent(tmp_path):
+    (tmp_path / "some-other-dataset").mkdir()
+    missing = tmp_path / "cicddos2019-parquet"
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        discover_files(missing, "*.parquet")
+
+    message = str(excinfo.value)
+    # Naming the siblings is what tells a mis-typed slug from a dataset that
+    # was never attached.
+    assert "some-other-dataset" in message
+    assert "not attached" in message
+
+
+def test_a_nested_layout_is_found_rather_than_reported_missing(tmp_path):
+    root = tmp_path / "input"
+    (root / "01-12").mkdir(parents=True)
+    target = root / "01-12" / "Syn.parquet"
+    target.write_bytes(b"")
+
+    assert discover_files(root, "*.parquet") == [target]
+
+
+def test_describe_handles_a_root_whose_parent_is_absent_too(tmp_path):
+    message = describe_input_root(tmp_path / "no" / "such" / "place")
+    assert "exists" in message

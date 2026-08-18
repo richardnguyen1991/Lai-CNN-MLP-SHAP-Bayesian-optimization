@@ -123,10 +123,37 @@ def load_dataset_config(repo_root: Path, dataset: str) -> Dict[str, Any]:
         return yaml.safe_load(handle)
 
 
+def describe_input_root(input_root: Path) -> str:
+    """What is actually at the input path, for an error that can be acted on.
+
+    On Kaggle a missing input directory almost always means the dataset was not
+    attached to the kernel, and the bare "no files matching" message gives no
+    way to tell that from a wrong glob or a nested layout.
+    """
+    if input_root.is_dir():
+        entries = sorted(child.name for child in input_root.iterdir())
+        suffixes = sorted({child.suffix for child in input_root.rglob("*")
+                           if child.is_file() and child.suffix})
+        return (f"{input_root} exists and contains {entries[:20]}"
+                f"{' ...' if len(entries) > 20 else ''}; "
+                f"file extensions present: {suffixes or 'none'}")
+
+    parent = input_root.parent
+    if parent.is_dir():
+        return (f"{input_root} does not exist; {parent} contains "
+                f"{sorted(child.name for child in parent.iterdir())}. "
+                "A Kaggle dataset mounts under its own slug, so this usually "
+                "means the dataset was not attached to the kernel.")
+
+    return f"neither {input_root} nor {parent} exists"
+
+
 def discover_files(input_root: Path, pattern: str) -> List[Path]:
     files = sorted(p for p in input_root.rglob(pattern) if p.is_file())
     if not files:
-        raise FileNotFoundError(f"no files matching {pattern!r} under {input_root}")
+        raise FileNotFoundError(
+            f"no files matching {pattern!r} under {input_root}. "
+            + describe_input_root(input_root))
     return files
 
 
