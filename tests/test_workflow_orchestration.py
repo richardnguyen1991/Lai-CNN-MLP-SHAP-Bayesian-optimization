@@ -284,3 +284,91 @@ def test_main_writes_an_access_token_to_its_own_file(monkeypatch, tmp_path):
     # Writing kaggle.json too would put the CLI back on the legacy path, which
     # it prefers to nothing and which cannot work with this credential.
     assert not (tmp_path / "cfg" / "kaggle.json").exists()
+
+
+# --------------------------------------------------------------------------
+# Following the kernel
+# --------------------------------------------------------------------------
+# `kaggle kernels status` prints its enum through %s, so the status arrives as
+# "KernelWorkerStatus.CANCEL_ACKNOWLEDGED" rather than "cancelAcknowledged".
+# Reading it naively yields the class name, which matches no known state, and a
+# kernel that had already died was polled for twenty minutes because an
+# unreadable status was indistinguishable from a running one.
+
+def _load_poll_module():
+    path = REPO_ROOT / "scripts" / "poll_kernel.py"
+    spec = importlib.util.spec_from_file_location("poll_kernel", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["poll_kernel"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+poll_kernel = _load_poll_module()
+
+KERNEL = "richardnguyen1991/lai-cnn-mlp-shap-bayesian-optimization"
+
+
+def status_output(enum_name, failure=None):
+    """What the CLI actually prints."""
+    line = f'{KERNEL} has status "KernelWorkerStatus.{enum_name}"'
+    if failure is not None:
+        line += f'\nFailure message: "{failure}"'
+    return line
+
+
+@pytest.mark.parametrize("enum_name, expected", [
+    ("QUEUED", "queued"),
+    ("RUNNING", "running"),
+    ("COMPLETE", "complete"),
+    ("ERROR", "error"),
+    ("CANCEL_REQUESTED", "cancelrequested"),
+    ("CANCEL_ACKNOWLEDGED", "cancelacknowledged"),
+])
+def test_every_kernel_state_parses_to_a_known_token(enum_name, expected):
+    status, _ = poll_kernel.parse_status_output(status_output(enum_name))
+    assert status == expected
+
+
+def test_the_class_name_is_not_mistaken_for_the_status():
+    # The regression. The previous pattern matched the first word after
+    # "status", which is the enum's class name, so nothing ever settled.
+    status, _ = poll_kernel.parse_status_output(status_output("ERROR"))
+    assert status != "kernelworkerstatus"
+    assert status in poll_kernel.SETTLED_BAD
+
+
+def test_a_cancelled_session_counts_as_a_normal_ending():
+    # The path a deliberate cancellation takes, and the one the resume check
+    # depends on. The underscore in the enum name has to be normalised away or
+    # this reads as an unknown state and the workflow keeps polling.
+    status, _ = poll_kernel.parse_status_output(status_output("CANCEL_ACKNOWLEDGED"))
+    assert status in poll_kernel.SETTLED_OK
+
+
+@pytest.mark.parametrize("enum_name", ["QUEUED", "RUNNING", "CANCEL_REQUESTED"])
+def test_states_still_in_flight_do_not_settle(enum_name):
+    status, _ = poll_kernel.parse_status_output(status_output(enum_name))
+    assert status not in poll_kernel.SETTLED_OK
+    assert status not in poll_kernel.SETTLED_BAD
+    assert status != poll_kernel.UNREADABLE
+
+
+def test_a_failure_message_is_carried_alongside_the_status():
+    status, detail = poll_kernel.parse_status_output(
+        status_output("ERROR", failure="FileNotFoundError: no files matching"))
+    assert status == "error"
+    assert "FileNotFoundError" in detail
+
+
+def test_output_with_no_status_line_is_its_own_outcome():
+    # Not "still running". Conflating the two is what let a dead kernel look
+    # alive for the whole timeout.
+    status, detail = poll_kernel.parse_status_output(
+        "401 Unauthorized\nAuthentication required to call the Kaggle API.")
+    assert status == poll_kernel.UNREADABLE
+    assert "Authentication required" in detail
+
+
+def test_the_settled_sets_do_not_overlap():
+    assert not (poll_kernel.SETTLED_OK & poll_kernel.SETTLED_BAD)
