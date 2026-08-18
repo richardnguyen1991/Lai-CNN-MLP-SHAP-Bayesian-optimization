@@ -151,22 +151,27 @@ jobs:
         env:
           RUN_ID: ${{ steps.state.outputs.run_id }}
 
-      - name: Alert — no progress across two sessions
-        if: steps.after.outputs.stalled == 'true'
+      - name: Alert - the chain stopped early
+        if: steps.after.outputs.stalled == 'true' || steps.after.outputs.capped == 'true'
         uses: actions/github-script@v7
         with:
           script: |
+            const stalled = '${{ steps.after.outputs.stalled }}' === 'true';
+            const reason = stalled
+              ? 'Two consecutive training sessions ended without advancing `current_epoch`.'
+              : 'The run has used its whole session budget (`MAX_SESSIONS`).';
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Kaggle run stalled: ${{ steps.state.outputs.run_id }}`,
+              title: `Kaggle run halted: ${{ steps.state.outputs.run_id }}`,
               body: [
-                'Two consecutive sessions ended without advancing `current_epoch`.',
+                reason,
                 'Chaining has stopped, so nothing further will run until this is',
                 'investigated and a session is dispatched by hand.',
                 '',
                 '- run id: `${{ steps.state.outputs.run_id }}`',
-                '- phase: `${{ steps.state.outputs.phase }}`',
+                '- phase: `${{ steps.after.outputs.phase }}`',
+                '- epoch: `${{ steps.after.outputs.current_epoch }}`',
                 '- see `session_log.json` under the run prefix on S3.',
               ].join('\n'),
             })
@@ -178,7 +183,10 @@ jobs:
           rm -rf build bootstrap_manifest.json
 
       - name: Chain the next session
-        if: steps.after.outputs.needs_more == 'true' && steps.after.outputs.stalled != 'true'
+        if: >-
+          steps.after.outputs.needs_more == 'true'
+          && steps.after.outputs.stalled != 'true'
+          && steps.after.outputs.capped != 'true'
         # With the cron disabled this is the only thing that starts the next
         # session. If it fails, the run halts here and waits for a manual
         # workflow_dispatch -- which is safe, just not automatic.
