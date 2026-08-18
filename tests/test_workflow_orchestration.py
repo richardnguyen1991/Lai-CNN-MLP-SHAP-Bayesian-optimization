@@ -182,3 +182,72 @@ def test_a_missing_log_starts_one_rather_than_failing(after):
     # session counts as progress rather than a stall.
     assert log[0]["start_epoch"] is None
     assert log[0]["advanced"] is True
+
+
+# --------------------------------------------------------------------------
+# Kaggle credentials
+# --------------------------------------------------------------------------
+# The first real dispatch died here. The workflow wrote the secret straight into
+# kaggle.json; the CLI parses that file inside a bare `except: pass`, so a value
+# that is not a JSON object was dropped without a word and the run failed three
+# steps later with a generic "authentication required".
+
+def _load_credentials_module():
+    path = REPO_ROOT / "scripts" / "write_kaggle_credentials.py"
+    spec = importlib.util.spec_from_file_location("write_kaggle_credentials", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["write_kaggle_credentials"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+write_credentials = _load_credentials_module()
+
+
+def test_a_raw_api_key_is_paired_with_the_username_secret():
+    # The shape that broke the first run: KAGGLE_API_TOKEN holding just the key.
+    assert write_credentials.credentials("abc123", "richard") == {
+        "username": "richard", "key": "abc123"}
+
+
+def test_a_full_kaggle_json_blob_is_accepted_as_is():
+    blob = json.dumps({"username": "embedded", "key": "k9"})
+    assert write_credentials.credentials(blob, "ignored") == {
+        "username": "embedded", "key": "k9"}
+
+
+def test_a_blob_without_a_username_falls_back_to_the_secret():
+    assert write_credentials.credentials('{"key": "k9"}', "fallback") == {
+        "username": "fallback", "key": "k9"}
+
+
+def test_surrounding_whitespace_does_not_become_part_of_the_key():
+    # A secret pasted with a trailing newline is the classic way to get a key
+    # that looks right and authenticates as nobody.
+    assert write_credentials.credentials("  abc123\n", " richard ") == {
+        "username": "richard", "key": "abc123"}
+
+
+@pytest.mark.parametrize("token, username", [
+    ("", "richard"),                       # secret not set
+    ("   ", "richard"),                    # secret set to whitespace
+    ('{"username": "x"}', "richard"),      # blob carrying no key
+    ('["not", "an", "object"]', "richard"),
+    ("abc123", ""),                        # key but nowhere to get a username
+])
+def test_unusable_secrets_fail_loudly(token, username):
+    with pytest.raises(SystemExit):
+        write_credentials.credentials(token, username)
+
+
+def test_main_writes_a_file_the_cli_can_actually_parse(monkeypatch, tmp_path):
+    monkeypatch.setenv("KAGGLE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "abc123")
+    monkeypatch.setenv("KAGGLE_USERNAME", "richard")
+
+    assert write_credentials.main() == 0
+
+    written = json.loads((tmp_path / "cfg" / "kaggle.json").read_text(encoding="utf-8"))
+    # Both fields present is the whole point: the CLI's legacy path needs
+    # username and key together, and quietly refuses to authenticate without.
+    assert written == {"username": "richard", "key": "abc123"}

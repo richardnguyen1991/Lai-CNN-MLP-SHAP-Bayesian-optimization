@@ -67,7 +67,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install tooling
-        run: pip install --quiet boto3 kaggle pyyaml
+        run: pip install --quiet boto3 'kaggle==2.2.4' pyyaml
 
       - name: Configure AWS credentials
         # The only place the long-lived keys are ever read. They never reach
@@ -81,10 +81,19 @@ jobs:
           chmod 600 ~/.aws/credentials
 
       - name: Configure Kaggle credentials
+        # The CLI parses kaggle.json inside a bare `except: pass`, so a secret
+        # that is not a JSON object is discarded in silence. The script accepts
+        # either shape the secret can hold and fails loudly if it holds neither.
+        run: python scripts/write_kaggle_credentials.py
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+
+      - name: Verify Kaggle authentication
+        # Fail here, naming the cause, rather than several steps later inside a
+        # kernel push whose only message is "authentication required".
         run: |
-          mkdir -p ~/.kaggle
-          printf '%s' '${{ secrets.KAGGLE_API_TOKEN }}' > ~/.kaggle/kaggle.json
-          chmod 600 ~/.kaggle/kaggle.json
+          kaggle kernels list -m --page-size 1 > /dev/null
+          echo "kaggle authentication ok"
 
       - name: Resolve run id and phase
         id: state
@@ -106,7 +115,7 @@ jobs:
         # Pushing a second session while one is live would have both writing the
         # same checkpoint keys.
         run: |
-          status=$(kaggle kernels status "$KAGGLE_KERNEL" 2>/dev/null | tr -d '\r' || echo "unknown")
+          status=$(kaggle kernels status "$KAGGLE_KERNEL" 2>&1 | tr -d '\r' || echo "unknown")
           echo "status: $status"
           if echo "$status" | grep -Eq 'running|queued'; then
             echo "busy=true" >> "$GITHUB_OUTPUT"
