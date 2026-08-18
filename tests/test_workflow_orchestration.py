@@ -204,50 +204,83 @@ def _load_credentials_module():
 write_credentials = _load_credentials_module()
 
 
-def test_a_raw_api_key_is_paired_with_the_username_secret():
-    # The shape that broke the first run: KAGGLE_API_TOKEN holding just the key.
-    assert write_credentials.credentials("abc123", "richard") == {
-        "username": "richard", "key": "abc123"}
+LEGACY = "0123456789abcdef0123456789abcdef"          # 32 hex, the legacy shape
+ACCESS = "kg_live_9f2c4a1e8b7d6503f1a2b3c4d5e6f7a8b"    # what the settings page issues now
+
+
+def test_a_legacy_api_key_is_paired_with_the_username_secret():
+    assert write_credentials.credentials(LEGACY, "richard") == (
+        "legacy", {"username": "richard", "key": LEGACY})
 
 
 def test_a_full_kaggle_json_blob_is_accepted_as_is():
-    blob = json.dumps({"username": "embedded", "key": "k9"})
-    assert write_credentials.credentials(blob, "ignored") == {
-        "username": "embedded", "key": "k9"}
+    blob = json.dumps({"username": "embedded", "key": LEGACY})
+    assert write_credentials.credentials(blob, "ignored") == (
+        "legacy", {"username": "embedded", "key": LEGACY})
 
 
 def test_a_blob_without_a_username_falls_back_to_the_secret():
-    assert write_credentials.credentials('{"key": "k9"}', "fallback") == {
-        "username": "fallback", "key": "k9"}
+    blob = json.dumps({"key": LEGACY})
+    assert write_credentials.credentials(blob, "fallback") == (
+        "legacy", {"username": "fallback", "key": LEGACY})
 
 
-def test_surrounding_whitespace_does_not_become_part_of_the_key():
-    # A secret pasted with a trailing newline is the classic way to get a key
-    # that looks right and authenticates as nobody.
-    assert write_credentials.credentials("  abc123\n", " richard ") == {
-        "username": "richard", "key": "abc123"}
+def test_a_token_that_is_not_a_legacy_key_is_treated_as_an_access_token():
+    # The regression. This token went into kaggle.json's "key" field, which
+    # made the CLI pick the legacy path and send it as a legacy key; the server
+    # answered 401 and the CLI printed a generic "authentication required" that
+    # named neither the file nor the credential kind.
+    assert write_credentials.credentials(ACCESS, "richard") == ("access", ACCESS)
+
+
+def test_an_access_token_needs_no_username():
+    # The CLI introspects the token for the username, so an absent
+    # KAGGLE_USERNAME must not be treated as an error here.
+    assert write_credentials.credentials(ACCESS, "") == ("access", ACCESS)
+
+
+def test_surrounding_whitespace_does_not_become_part_of_the_credential():
+    # A secret pasted with a trailing newline is the classic way to get a
+    # credential that looks right and authenticates as nobody.
+    trailing = "  " + LEGACY + chr(10)
+    assert write_credentials.credentials(trailing, " richard ") == (
+        "legacy", {"username": "richard", "key": LEGACY})
 
 
 @pytest.mark.parametrize("token, username", [
-    ("", "richard"),                       # secret not set
-    ("   ", "richard"),                    # secret set to whitespace
-    ('{"username": "x"}', "richard"),      # blob carrying no key
+    ("", "richard"),                            # secret not set
+    ("   ", "richard"),                         # secret set to whitespace
+    ('{"username": "x"}', "richard"),           # blob carrying no key
     ('["not", "an", "object"]', "richard"),
-    ("abc123", ""),                        # key but nowhere to get a username
+    (LEGACY, ""),                               # legacy key with nowhere to get a username
 ])
 def test_unusable_secrets_fail_loudly(token, username):
     with pytest.raises(SystemExit):
         write_credentials.credentials(token, username)
 
 
-def test_main_writes_a_file_the_cli_can_actually_parse(monkeypatch, tmp_path):
+def test_main_writes_a_legacy_key_where_the_cli_reads_one(monkeypatch, tmp_path):
     monkeypatch.setenv("KAGGLE_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.setenv("KAGGLE_API_TOKEN", "abc123")
+    monkeypatch.setenv("KAGGLE_API_TOKEN", LEGACY)
     monkeypatch.setenv("KAGGLE_USERNAME", "richard")
 
     assert write_credentials.main() == 0
 
     written = json.loads((tmp_path / "cfg" / "kaggle.json").read_text(encoding="utf-8"))
-    # Both fields present is the whole point: the CLI's legacy path needs
-    # username and key together, and quietly refuses to authenticate without.
-    assert written == {"username": "richard", "key": "abc123"}
+    # Both fields together is the whole point: the legacy path needs username
+    # and key, and quietly refuses to authenticate without.
+    assert written == {"username": "richard", "key": LEGACY}
+    assert not (tmp_path / "cfg" / "access_token").exists()
+
+
+def test_main_writes_an_access_token_to_its_own_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("KAGGLE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("KAGGLE_API_TOKEN", ACCESS)
+    monkeypatch.setenv("KAGGLE_USERNAME", "richard")
+
+    assert write_credentials.main() == 0
+
+    assert (tmp_path / "cfg" / "access_token").read_text(encoding="utf-8") == ACCESS
+    # Writing kaggle.json too would put the CLI back on the legacy path, which
+    # it prefers to nothing and which cannot work with this credential.
+    assert not (tmp_path / "cfg" / "kaggle.json").exists()

@@ -1,20 +1,22 @@
-"""Write ~/.kaggle/kaggle.json from the repository secrets.
+"""Put the Kaggle secret where the CLI will actually look for it.
 
-The Kaggle CLI authenticates with a legacy API key only when its configuration
-carries both `username` and `key`. Those come from kaggle.json or from the
-KAGGLE_USERNAME / KAGGLE_KEY environment pair -- and the workflow sets
-KAGGLE_USERNAME but no KAGGLE_KEY, so the file is the only source of the key.
+The CLI accepts two unrelated kinds of credential, and putting one where the
+other belongs fails in a way that reads like a missing secret:
 
-Writing the secret straight into kaggle.json is what failed before: the CLI
-parses that file inside a bare `except: pass`, so a value that is not a JSON
-object is discarded without a word, and the run dies several steps later with a
-generic "authentication required". Hence this script: it accepts either shape
-the secret can plausibly hold, and fails loudly and immediately if it holds
-neither.
+  legacy API key   32 hex characters, supplied as {"username", "key"} in
+                   ~/.kaggle/kaggle.json, or as KAGGLE_USERNAME / KAGGLE_KEY
+  access token     the opaque string the settings page issues today, supplied
+                   as KAGGLE_API_TOKEN or in ~/.kaggle/access_token
 
-KAGGLE_API_TOKEN may be:
-  * a full kaggle.json blob, `{"username": ..., "key": ...}`
-  * the raw API key on its own, in which case KAGGLE_USERNAME supplies the name
+This matters because authenticate() selects the legacy path on the mere
+presence of a username and key. An access token written into the "key" field is
+therefore accepted locally, sent as a legacy key, and rejected by the server --
+and the CLI answers a 401 by printing its generic "authentication required"
+help, which names neither the file it read nor the credential it sent. That
+cost a full diagnosis cycle; the shape check below is what stops it recurring.
+
+KAGGLE_API_TOKEN may hold a full kaggle.json blob, a bare legacy key, or an
+access token. Each is routed to the file that matches it.
 """
 
 from __future__ import annotations
@@ -38,7 +40,8 @@ def config_dir() -> Path:
     return Path(override) if override else Path.home() / ".kaggle"
 
 
-def credentials(token: str, username: str) -> dict:
+def credentials(token: str, username: str):
+    """Classify the secret. Returns ("legacy", {...}) or ("access", token)."""
     token = token.strip()
     if not token:
         raise SystemExit("KAGGLE_API_TOKEN is empty; set it in the repository secrets")
@@ -46,40 +49,50 @@ def credentials(token: str, username: str) -> dict:
     try:
         blob = json.loads(token)
     except json.JSONDecodeError:
-        blob = {"key": token}
+        blob = None
 
-    if not isinstance(blob, dict):
-        raise SystemExit("KAGGLE_API_TOKEN parsed as JSON but is not an object")
+    if blob is not None:
+        if not isinstance(blob, dict):
+            raise SystemExit("KAGGLE_API_TOKEN parsed as JSON but is not an object")
+        key = str(blob.get("key", "")).strip()
+        if not key:
+            raise SystemExit("KAGGLE_API_TOKEN is a JSON object with no 'key' field")
+        name = str(blob.get("username", "")).strip() or username.strip()
+        if not name:
+            raise SystemExit("no Kaggle username: set KAGGLE_USERNAME or embed one in the token")
+        return "legacy", {"username": name, "key": key}
 
-    key = str(blob.get("key", "")).strip()
-    if not key:
-        raise SystemExit("KAGGLE_API_TOKEN holds no API key")
+    if LEGACY_KEY.fullmatch(token):
+        name = username.strip()
+        if not name:
+            raise SystemExit("no Kaggle username: set KAGGLE_USERNAME alongside the API key")
+        return "legacy", {"username": name, "key": token}
 
-    name = str(blob.get("username", "")).strip() or username.strip()
-    if not name:
-        raise SystemExit("no Kaggle username: set KAGGLE_USERNAME or embed one in the token")
-
-    return {"username": name, "key": key}
+    # Anything else is treated as an access token. The CLI introspects it for
+    # the username, so none is needed here.
+    return "access", token
 
 
 def main() -> int:
-    creds = credentials(os.environ.get("KAGGLE_API_TOKEN", ""),
-                        os.environ.get("KAGGLE_USERNAME", ""))
+    kind, payload = credentials(os.environ.get("KAGGLE_API_TOKEN", ""),
+                                os.environ.get("KAGGLE_USERNAME", ""))
 
     directory = config_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "kaggle.json"
-    path.write_text(json.dumps(creds), encoding="utf-8")
-    path.chmod(0o600)
 
-    # Never print the key. Shape and length are enough to tell a plausible
-    # secret from the wrong kind of string, and GitHub masks the username.
-    key = creds["key"]
-    print(f"wrote {path} for user {creds['username']} (key length {len(key)})")
-    if not LEGACY_KEY.fullmatch(key):
-        print("warning: this does not look like a Kaggle API key, which is 32 "
-              "hex characters. Check the KAGGLE_API_TOKEN secret holds the "
-              '"key" field from kaggle.json and nothing else.')
+    # Never print a credential. Kind and length are enough to tell a plausible
+    # secret from the wrong sort of string, and GitHub masks the username.
+    if kind == "legacy":
+        path = directory / "kaggle.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        path.chmod(0o600)
+        print(f"wrote {path} as a legacy API key for {payload['username']}")
+    else:
+        path = directory / "access_token"
+        path.write_text(payload, encoding="utf-8")
+        path.chmod(0o600)
+        print(f"wrote {path} as an access token (length {len(payload)})")
+
     return 0
 
 

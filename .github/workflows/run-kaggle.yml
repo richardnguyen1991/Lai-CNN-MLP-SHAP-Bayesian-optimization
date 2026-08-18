@@ -88,35 +88,6 @@ jobs:
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
 
-      - name: Diagnose credential visibility
-        # Temporary. The CLI reported "no credentials at all" while the file it
-        # reads was present and well formed, so this prints what the process
-        # actually sees. No secret values are printed.
-        run: |
-          echo "HOME=$HOME"
-          ls -la "$HOME/.kaggle" || echo "no ~/.kaggle"
-          python - <<'PY'
-          import json, os, sys
-          from pathlib import Path
-          path = Path.home() / ".kaggle" / "kaggle.json"
-          print("exists:", path.exists())
-          if path.exists():
-              raw = path.read_text()
-              print("bytes:", len(raw))
-              try:
-                  blob = json.loads(raw)
-                  print("keys:", sorted(blob))
-                  print("lengths:", {k: len(str(v)) for k, v in blob.items()})
-              except Exception as exc:
-                  print("json error:", exc)
-          print("KAGGLE_ env names:", sorted(k for k in os.environ if k.startswith("KAGGLE_")))
-          sys.path.insert(0, "")
-          from kaggle.api.kaggle_api_extended import KaggleApi
-          api = KaggleApi.__new__(KaggleApi)
-          print("cli config path:", getattr(api, "config", "not set on instance"))
-          PY
-          kaggle config view || echo "config view failed"
-
       - name: Verify Kaggle authentication
         # Fail here, naming the cause, rather than several steps later inside a
         # kernel push whose only message is "authentication required". The CLI
