@@ -1,0 +1,17 @@
+{
+  "id": "richardnguyen1991/lai-cnn-mlp-shap-bayesian-optimization",
+  "title": "Lai CNN-MLP SHAP Bayesian Optimization",
+  "code_file": "kaggle_notebook.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "dungnguyen28101991/cicddos2019-parquet"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

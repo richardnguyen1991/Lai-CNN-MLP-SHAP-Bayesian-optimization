@@ -1,0 +1,9 @@
+# Control: no SHAP selection, every surviving feature goes to the model.
+# Answers whether SHAP selection helps or merely reduces dimensionality.
+_variant: featall
+_description: >
+  All features, so the contribution of SHAP selection can be read off the
+  difference against main.
+_runs_bayesian_search: false
+shap:
+  feature_set: all

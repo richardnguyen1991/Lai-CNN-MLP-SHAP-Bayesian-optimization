@@ -1,0 +1,194 @@
+name: run-kaggle
+
+# Drives one Kaggle session per invocation and reschedules itself until the run
+# reaches epoch 100. A Kaggle CPU session is capped at 12 hours, so a 100-epoch
+# run spans several sessions. With the cron disabled, the 'Chain the next
+# session' step is what carries the run across them: each session that advances
+# an epoch dispatches the next one.
+#
+# Cancellation by the time limit is a normal outcome. The workflow fails only on
+# a genuine problem: no progress across two sessions, a hash mismatch, or bad
+# credentials.
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'main | featall | feat20 | paperlike | mlponly | cnnonly | nobo'
+        required: true
+        default: 'main'
+      force_new_run:
+        description: 'true/false — start a fresh run_id instead of resuming'
+        required: false
+        default: 'false'
+  # DISABLED until the resume check passes on Kaggle. Merging this with the cron
+  # live would start a session every 3 hours from the moment of the push, before
+  # anyone has confirmed a cancelled session resumes at the right epoch. Until
+  # then the run is carried by 'Chain the next session' alone, which only fires
+  # after a session that actually made progress. Uncomment once resume is proven.
+  # schedule:
+  #   # Every 3 hours: check whether the run still needs a session, and start one.
+  #   - cron: '0 */3 * * *'
+
+concurrency:
+  # Second line of defence. The first is the Kaggle status check below: two
+  # sessions writing the same checkpoint would corrupt history.json.
+  group: kaggle-${{ github.event.inputs.variant || 'main' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  # createWorkflowDispatch in 'Chain the next session' needs this. Declaring a
+  # permissions block sets every unlisted scope to none, so without this line
+  # that step fails 403 and the run stops dead after a single session.
+  actions: write
+
+env:
+  DATASET: cicddos2019
+  VARIANT: ${{ github.event.inputs.variant || 'main' }}
+  KAGGLE_KERNEL: ${{ secrets.KAGGLE_KERNEL }}
+  KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+  AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+  S3_BUCKET: ${{ secrets.S3_BUCKET }}
+  S3_PREFIX: ${{ secrets.S3_PREFIX }}
+  MAX_SESSIONS: '20'
+
+jobs:
+  session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 780          # 13 h: one Kaggle session plus polling overhead
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install tooling
+        run: pip install --quiet boto3 kaggle pyyaml
+
+      - name: Configure AWS credentials
+        # The only place the long-lived keys are ever read. They never reach
+        # Kaggle, the notebook, or any artifact.
+        run: |
+          mkdir -p ~/.aws
+          printf '[default]\naws_access_key_id=%s\naws_secret_access_key=%s\nregion=%s\n' \
+            '${{ secrets.AWS_ACCESS_KEY_ID }}' \
+            '${{ secrets.AWS_SECRET_ACCESS_KEY }}' \
+            '${{ secrets.AWS_DEFAULT_REGION }}' > ~/.aws/credentials
+          chmod 600 ~/.aws/credentials
+
+      - name: Configure Kaggle credentials
+        run: |
+          mkdir -p ~/.kaggle
+          printf '%s' '${{ secrets.KAGGLE_API_TOKEN }}' > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+
+      - name: Resolve run id and phase
+        id: state
+        # Reads training_state.json from S3 to decide resume vs cold start, and
+        # whether the run is already finished.
+        run: python scripts/workflow_state.py
+        env:
+          FORCE_NEW_RUN: ${{ github.event.inputs.force_new_run || 'false' }}
+
+      - name: Stop — the run is complete
+        if: steps.state.outputs.finished == 'true'
+        run: |
+          echo "run ${{ steps.state.outputs.run_id }} reached epoch 100; no session needed"
+          echo "evaluation and reporting run from make_report.py"
+
+      - name: Guard — is a kernel already running?
+        if: steps.state.outputs.finished != 'true'
+        id: guard
+        # Pushing a second session while one is live would have both writing the
+        # same checkpoint keys.
+        run: |
+          status=$(kaggle kernels status "$KAGGLE_KERNEL" 2>/dev/null | tr -d '\r' || echo "unknown")
+          echo "status: $status"
+          if echo "$status" | grep -Eq 'running|queued'; then
+            echo "busy=true" >> "$GITHUB_OUTPUT"
+            echo "a session is already live; exiting without pushing"
+          else
+            echo "busy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint presigned URLs
+        if: steps.state.outputs.finished != 'true' && steps.guard.outputs.busy != 'true'
+        run: |
+          python scripts/make_manifest.py \
+            --run-id "${{ steps.state.outputs.run_id }}" \
+            --phase "${{ steps.state.outputs.phase }}" \
+            --ttl-hours 13 \
+            --out bootstrap_manifest.json \
+            --emit-url-to manifest_url.txt
+
+      - name: Inject the URL into a throwaway notebook
+        if: steps.state.outputs.finished != 'true' && steps.guard.outputs.busy != 'true'
+        run: |
+          mkdir -p build
+          cp kernel-metadata.json build/
+          python scripts/inject_notebook.py \
+            --manifest-url-file manifest_url.txt \
+            --run-id "${{ steps.state.outputs.run_id }}" \
+            --out build/kaggle_notebook.ipynb
+
+      - name: Push and follow the kernel
+        if: steps.state.outputs.finished != 'true' && steps.guard.outputs.busy != 'true'
+        run: |
+          kaggle kernels push -p build
+          python scripts/poll_kernel.py --kernel "$KAGGLE_KERNEL" --timeout-minutes 730
+
+      - name: Record the session and decide what happens next
+        if: always() && steps.state.outputs.finished != 'true' && steps.guard.outputs.busy != 'true'
+        id: after
+        # Re-reads training_state.json. If the epoch advanced, the next cron run
+        # continues; if it did not advance twice running, stop and raise an issue
+        # rather than burning sessions in a loop.
+        run: python scripts/workflow_after.py
+        env:
+          RUN_ID: ${{ steps.state.outputs.run_id }}
+
+      - name: Alert — no progress across two sessions
+        if: steps.after.outputs.stalled == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Kaggle run stalled: ${{ steps.state.outputs.run_id }}`,
+              body: [
+                'Two consecutive sessions ended without advancing `current_epoch`.',
+                'Chaining has stopped, so nothing further will run until this is',
+                'investigated and a session is dispatched by hand.',
+                '',
+                '- run id: `${{ steps.state.outputs.run_id }}`',
+                '- phase: `${{ steps.state.outputs.phase }}`',
+                '- see `session_log.json` under the run prefix on S3.',
+              ].join('\n'),
+            })
+
+      - name: Scrub credentials and injected files
+        if: always()
+        run: |
+          rm -f ~/.aws/credentials ~/.kaggle/kaggle.json manifest_url.txt
+          rm -rf build bootstrap_manifest.json
+
+      - name: Chain the next session
+        if: steps.after.outputs.needs_more == 'true' && steps.after.outputs.stalled != 'true'
+        # With the cron disabled this is the only thing that starts the next
+        # session. If it fails, the run halts here and waits for a manual
+        # workflow_dispatch -- which is safe, just not automatic.
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'run-kaggle.yml',
+              ref: context.ref,
+              inputs: { variant: '${{ env.VARIANT }}', force_new_run: 'false' },
+            })

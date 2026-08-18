@@ -1,0 +1,6 @@
+# Ablation: the CNN branch alone.
+_variant: cnnonly
+_description: CNN branch only, hyperparameters reused from main.
+_runs_bayesian_search: false
+model_overrides:
+  architecture: cnn_only

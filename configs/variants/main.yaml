@@ -1,0 +1,9 @@
+# The replication itself. Everything here is the default; the file exists so the
+# run matrix has one entry per variant and none of them is implicit.
+#
+# top40 features, temporal stratified split, Bayesian search, 100 epochs.
+_variant: main
+_description: >
+  Primary replication. The only variant that runs a real Bayesian search; the
+  others reuse its best_params so that ablation isolates one factor at a time.
+_runs_bayesian_search: true

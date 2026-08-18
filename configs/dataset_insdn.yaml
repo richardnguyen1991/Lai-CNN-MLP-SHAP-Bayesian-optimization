@@ -1,0 +1,137 @@
+# InSDN dataset profile
+# Paper: 84 features, 68,424 normal + 292,893 attack = 361,317 rows (§2.1 p.9).
+# NOTE: the published InSDN release is commonly reported as 343,939 rows with the
+# same 68,424 Normal count. The attack count therefore does NOT reconcile.
+# data_audit.py counts the real rows and writes them to data_profile.json;
+# the paper's figures are recorded for comparison only and are never trusted.
+#
+# Header style: CICFlowMeter-V4 abbreviated names ("Fwd Pkt Len Mean"),
+# which is exactly what Table 1 of the paper shows.
+
+dataset_name: insdn
+input_glob: "*.parquet"
+
+label_column_candidates: ["Label", " Label", "label"]
+
+drop_columns_canonical:
+  - flow_id
+  - source_ip
+  - destination_ip
+  - timestamp
+  - unnamed_0
+
+keep_with_caveat:
+  - source_port
+  - destination_port
+  - protocol
+
+group_column: source_file
+
+# attack_scope = ddos_dos_only (confirmed decision):
+# keep Normal + DDoS + DoS, drop the remaining attack families so the task stays
+# a DDoS-detection problem as in the paper. Dropped row count is recorded in
+# data_profile.json under `attack_scope_dropped_rows`.
+attack_scope: ddos_dos_only
+
+attack_scope_definitions:
+  ddos_dos_only:
+    keep: [DDoS, DoS]
+    drop: [Probe, BFA, Web-Attack, BOTNET, U2R]
+  all_attacks:
+    keep: [DDoS, DoS, Probe, BFA, Web-Attack, BOTNET, U2R]
+    drop: []
+
+binary_label_mapping:
+  benign_labels: ["Normal", "NORMAL", "normal", "BENIGN", "Benign"]
+  attack_labels:
+    - DDoS
+    - DoS
+    - Probe
+    - BFA
+    - Web-Attack
+    - BOTNET
+    - U2R
+  on_unknown_label: fail
+
+schema_aliases:
+  destination_port: [dst_port, destination_port]
+  source_port: [src_port, source_port]
+  flow_id: [flow_id]
+  source_ip: [src_ip, source_ip]
+  destination_ip: [dst_ip, destination_ip]
+  total_fwd_packets: [tot_fwd_pkts, total_fwd_packets]
+  total_backward_packets: [tot_bwd_pkts, total_backward_packets]
+  total_length_of_fwd_packets: [totlen_fwd_pkts, total_length_of_fwd_packets]
+  total_length_of_bwd_packets: [totlen_bwd_pkts, total_length_of_bwd_packets]
+  fwd_packet_length_max: [fwd_pkt_len_max, fwd_packet_length_max]
+  fwd_packet_length_min: [fwd_pkt_len_min, fwd_packet_length_min]
+  fwd_packet_length_mean: [fwd_pkt_len_mean, fwd_packet_length_mean]
+  fwd_packet_length_std: [fwd_pkt_len_std, fwd_packet_length_std]
+  bwd_packet_length_max: [bwd_pkt_len_max, bwd_packet_length_max]
+  bwd_packet_length_min: [bwd_pkt_len_min, bwd_packet_length_min]
+  bwd_packet_length_mean: [bwd_pkt_len_mean, bwd_packet_length_mean]
+  bwd_packet_length_std: [bwd_pkt_len_std, bwd_packet_length_std]
+  flow_bytes_per_s: [flow_byts_s, flow_bytes_s]
+  flow_packets_per_s: [flow_pkts_s, flow_packets_s]
+  fwd_packets_per_s: [fwd_pkts_s, fwd_packets_s]
+  bwd_packets_per_s: [bwd_pkts_s, bwd_packets_s]
+  min_packet_length: [pkt_len_min, min_packet_length]
+  max_packet_length: [pkt_len_max, max_packet_length]
+  packet_length_mean: [pkt_len_mean, packet_length_mean]
+  packet_length_std: [pkt_len_std, packet_length_std]
+  packet_length_variance: [pkt_len_var, packet_length_variance]
+  average_packet_size: [pkt_size_avg, average_packet_size]
+  avg_fwd_segment_size: [fwd_seg_size_avg, avg_fwd_segment_size]
+  avg_bwd_segment_size: [bwd_seg_size_avg, avg_bwd_segment_size]
+  subflow_fwd_packets: [subflow_fwd_pkts, subflow_fwd_packets]
+  subflow_fwd_bytes: [subflow_fwd_byts, subflow_fwd_bytes]
+  subflow_bwd_packets: [subflow_bwd_pkts, subflow_bwd_packets]
+  subflow_bwd_bytes: [subflow_bwd_byts, subflow_bwd_bytes]
+  fwd_header_length: [fwd_header_len, fwd_header_length]
+  bwd_header_length: [bwd_header_len, bwd_header_length]
+  init_fwd_win_bytes: [init_fwd_win_byts, init_win_bytes_forward]
+  init_bwd_win_bytes: [init_bwd_win_byts, init_win_bytes_backward]
+  fwd_act_data_packets: [fwd_act_data_pkts, act_data_pkt_fwd]
+  min_seg_size_forward: [fwd_seg_size_min, min_seg_size_forward]
+  fwd_iat_total: [fwd_iat_tot, fwd_iat_total]
+  bwd_iat_total: [bwd_iat_tot, bwd_iat_total]
+  urg_flag_count: [urg_flag_cnt, urg_flag_count]
+  syn_flag_count: [syn_flag_cnt, syn_flag_count]
+  fin_flag_count: [fin_flag_cnt, fin_flag_count]
+  rst_flag_count: [rst_flag_cnt, rst_flag_count]
+  psh_flag_count: [psh_flag_cnt, psh_flag_count]
+  ack_flag_count: [ack_flag_cnt, ack_flag_count]
+  cwe_flag_count: [cwe_flag_count, cwr_flag_count]
+  ece_flag_count: [ece_flag_cnt, ece_flag_count]
+
+# Features named in Table 1 of the paper (InSDN waterfall, see SPEC D3).
+# All 19 are identifiable here, unlike Table 2.
+paper_table1_features:
+  - {rank: 1,  canonical: fwd_packet_length_mean, shap: +1.67}
+  - {rank: 2,  canonical: destination_port,       shap: -1.44}
+  - {rank: 3,  canonical: average_packet_size,    shap: +1.38}
+  - {rank: 4,  canonical: packet_length_mean,     shap: +0.98}
+  - {rank: 5,  canonical: avg_fwd_segment_size,   shap: +0.83}
+  - {rank: 6,  canonical: subflow_fwd_bytes,      shap: +0.59}
+  - {rank: 7,  canonical: fwd_act_data_packets,   shap: +0.32}
+  - {rank: 8,  canonical: bwd_header_length,      shap: -0.27}
+  - {rank: 9,  canonical: flow_duration,          shap: +0.26}
+  - {rank: 10, canonical: flow_iat_max,           shap: +0.18}
+  - {rank: 11, canonical: fwd_packet_length_std,  shap: +0.12}
+  - {rank: 12, canonical: total_fwd_packets,      shap: -0.11}
+  - {rank: 13, canonical: subflow_fwd_packets,    shap: -0.10}
+  - {rank: 14, canonical: total_backward_packets, shap: +0.07}
+  - {rank: 15, canonical: bwd_iat_mean,           shap: +0.07}
+  - {rank: 16, canonical: packet_length_variance, shap: -0.06}
+  - {rank: 17, canonical: init_bwd_win_bytes,     shap: -0.05}
+  - {rank: 18, canonical: idle_min,               shap: -0.04}
+  - {rank: 19, canonical: idle_mean,              shap: +0.03}
+paper_table1_other_features_shap: -0.11   # "21 other features" -> implied input dim = 40
+paper_table1_expected_value: -9.53
+paper_table1_model_output: -5.225
+
+# Row counts the paper claims, for the comparison table only. Never used as truth.
+paper_claimed_rows:
+  total: 361317
+  benign: 68424
+  attack: 292893

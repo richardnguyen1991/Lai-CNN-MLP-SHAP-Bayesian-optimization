@@ -1,0 +1,10 @@
+# Control: 20 features, the figure the original prompt assumed before the
+# paper's tables were read closely (SPEC finding D2 puts the paper at 40).
+_variant: feat20
+_description: >
+  Half the feature budget of main, to show the sensitivity of the result to
+  top_k rather than asserting 40 was the only defensible choice.
+_runs_bayesian_search: false
+shap:
+  feature_set: top20
+  top_k: 20

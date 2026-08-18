@@ -1,0 +1,65 @@
+# Bayesian hyperparameter search. The paper says only "Bayesian optimization"
+# and names no variable, range, acquisition function or budget, so every value
+# here is ours (SPEC findings B7, B8).
+
+library: optuna
+sampler: tpe                  # TPE is the Bayesian sampler
+n_trials: 20
+bo_epochs: 10                 # a proxy search, not the 100-epoch final training
+objective: val_macro_f1       # not accuracy: 1:30 in train, 1:618 in test
+direction: maximize
+
+# Pruning is allowed HERE ONLY. It is a search-budget device, not early
+# stopping: the final model always runs the full 100 epochs. Conflating the two
+# is the easiest way to end up reporting a model that stopped when it looked
+# good on validation.
+pruner: median
+pruner_warmup_steps: 3
+
+# learning_rate and batch_size are deliberately ABSENT from the search space.
+# Both are fixed by the user constraint (lr = 0.001, batch = 4096). Note that
+# the paper reports no learning rate at all -- the string "0.001" does not
+# appear in it (SPEC finding D1) -- so this is not "matching the paper".
+fixed:
+  learning_rate: 0.001
+  batch_size: 4096
+  optimizer: adam
+  epochs_final: 100
+
+search_space:
+  cnn_filters_1:
+    type: categorical
+    choices: [16, 32, 64]
+  cnn_filters_2:
+    type: categorical
+    choices: [32, 64, 128]
+  cnn_kernel_size:
+    type: categorical
+    choices: [3, 5]
+  mlp_units_1:
+    type: categorical
+    choices: [64, 128, 256]
+  mlp_units_2:
+    type: categorical
+    choices: [32, 64, 128]
+  fusion_dim:
+    type: categorical
+    choices: [64, 128, 256]
+  dropout:
+    type: float
+    low: 0.0
+    high: 0.5
+  weight_decay:
+    type: float
+    low: 1.0e-6
+    high: 1.0e-3
+    log: true
+  # activation stays fixed at relu: the paper states ReLU explicitly, so it is
+  # one of the few things not left to us. Widen only for a named ablation.
+
+storage:
+  # SQLite on disk, synced to S3 after every trial, so a cancelled Kaggle
+  # session resumes the study instead of restarting it.
+  filename: optuna_study.db
+  study_name: cnnmlp-cicddos2019
+  load_if_exists: true

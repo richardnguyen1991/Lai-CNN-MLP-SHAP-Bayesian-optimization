@@ -1,0 +1,8 @@
+# Ablation: the MLP branch alone. Together with cnnonly this is what proves
+# both branches contribute (acceptance criterion 5) rather than one carrying
+# the model while the other is decorative.
+_variant: mlponly
+_description: MLP branch only, hyperparameters reused from main.
+_runs_bayesian_search: false
+model_overrides:
+  architecture: mlp_only

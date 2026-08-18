@@ -1,0 +1,177 @@
+# CIC-DDoS2019 dataset profile
+# Paper: 88 features (Mehmood et al. 2025, §2.1 p.8)
+# Header style: space-separated, MANY columns have a leading space (" Destination Port").
+# Table 2 of the paper shows the same names with spaces stripped (DestinationPort).
+
+dataset_name: cicddos2019
+input_glob: "*.parquet"
+
+label_column_candidates: ["Label", " Label", "label"]
+
+# Columns removed before any modelling: identifiers, timestamps, row indices.
+# Rationale in README: these leak capture identity, not attack behaviour.
+drop_columns_canonical:
+  - flow_id
+  - source_ip
+  - destination_ip
+  - timestamp
+  - simillar_http
+  - unnamed_0
+  # " Fwd Header Length.1" is a known CICFlowMeter artefact: an exact copy of
+  # " Fwd Header Length". Keeping both double-weights one quantity in SHAP.
+  - fwd_header_length_1
+
+# Added by whoever produced the Parquet, not part of CICFlowMeter's 88 features.
+# Used for grouping and auditing; never features, and never part of the row hash.
+#
+# source_row_id is the dangerous one: it is unique per row, so hashing it would
+# make every row distinct and silently report zero duplicates -- disabling the
+# deduplication that the whole leakage argument rests on.
+metadata_columns:
+  - capture_day
+  - source_file_id
+  - source_row_id
+
+# Kept deliberately despite being capture-setup dependent, because the paper's
+# Table 2 ranks them (Protocol, Inbound). README must carry the caveat.
+keep_with_caveat:
+  - source_port
+  - destination_port
+  - protocol
+  - inbound
+
+# Column used to form groups for group-aware splitting. CIC-DDoS2019 is captured
+# one attack type per file, so the source file is the natural group.
+group_column: source_file
+
+binary_label_mapping:
+  benign_labels: ["BENIGN", "Benign", "benign", "NORMAL", "Normal"]
+  attack_labels:
+    - DrDoS_DNS
+    - DrDoS_LDAP
+    - DrDoS_MSSQL
+    - DrDoS_NetBIOS
+    - DrDoS_NTP
+    - DrDoS_SNMP
+    - DrDoS_SSDP
+    - DrDoS_UDP
+    - Syn
+    - TFTP
+    - UDP-lag
+    - UDPLag
+    - WebDDoS
+    - Portmap
+    - LDAP
+    - MSSQL
+    - NetBIOS
+    - UDP
+  # Any label outside both lists -> fail-fast. Never silently coerced.
+  on_unknown_label: fail
+
+attack_scope: all_attacks   # CIC-DDoS2019 is DDoS-only by construction
+
+# canonical_name: [accepted raw variants, matched AFTER normalisation]
+# Only columns that differ between the two datasets, or that the paper's
+# Table 1 / Table 2 reference, need an explicit entry. Everything else falls
+# through to the generic normaliser (strip -> collapse ws -> snake_case).
+schema_aliases:
+  destination_port: [dst_port, destination_port]
+  source_port: [src_port, source_port]
+  flow_id: [flow_id]
+  source_ip: [src_ip, source_ip]
+  destination_ip: [dst_ip, destination_ip]
+  total_fwd_packets: [tot_fwd_pkts, total_fwd_packets]
+  total_backward_packets: [tot_bwd_pkts, total_backward_packets]
+  total_length_of_fwd_packets: [totlen_fwd_pkts, total_length_of_fwd_packets]
+  total_length_of_bwd_packets: [totlen_bwd_pkts, total_length_of_bwd_packets]
+  fwd_packet_length_max: [fwd_pkt_len_max, fwd_packet_length_max]
+  fwd_packet_length_min: [fwd_pkt_len_min, fwd_packet_length_min]
+  fwd_packet_length_mean: [fwd_pkt_len_mean, fwd_packet_length_mean]
+  fwd_packet_length_std: [fwd_pkt_len_std, fwd_packet_length_std]
+  bwd_packet_length_max: [bwd_pkt_len_max, bwd_packet_length_max]
+  bwd_packet_length_min: [bwd_pkt_len_min, bwd_packet_length_min]
+  bwd_packet_length_mean: [bwd_pkt_len_mean, bwd_packet_length_mean]
+  bwd_packet_length_std: [bwd_pkt_len_std, bwd_packet_length_std]
+  flow_bytes_per_s: [flow_byts_s, flow_bytes_s]
+  flow_packets_per_s: [flow_pkts_s, flow_packets_s]
+  fwd_packets_per_s: [fwd_pkts_s, fwd_packets_s]
+  bwd_packets_per_s: [bwd_pkts_s, bwd_packets_s]
+  min_packet_length: [pkt_len_min, min_packet_length]
+  max_packet_length: [pkt_len_max, max_packet_length]
+  packet_length_mean: [pkt_len_mean, packet_length_mean]
+  packet_length_std: [pkt_len_std, packet_length_std]
+  packet_length_variance: [pkt_len_var, packet_length_variance]
+  average_packet_size: [pkt_size_avg, average_packet_size]
+  avg_fwd_segment_size: [fwd_seg_size_avg, avg_fwd_segment_size]
+  avg_bwd_segment_size: [bwd_seg_size_avg, avg_bwd_segment_size]
+  subflow_fwd_packets: [subflow_fwd_pkts, subflow_fwd_packets]
+  subflow_fwd_bytes: [subflow_fwd_byts, subflow_fwd_bytes]
+  subflow_bwd_packets: [subflow_bwd_pkts, subflow_bwd_packets]
+  subflow_bwd_bytes: [subflow_bwd_byts, subflow_bwd_bytes]
+  fwd_header_length: [fwd_header_len, fwd_header_length]
+  bwd_header_length: [bwd_header_len, bwd_header_length]
+  init_fwd_win_bytes: [init_fwd_win_byts, init_win_bytes_forward]
+  init_bwd_win_bytes: [init_bwd_win_byts, init_win_bytes_backward]
+  fwd_act_data_packets: [fwd_act_data_pkts, act_data_pkt_fwd]
+  min_seg_size_forward: [fwd_seg_size_min, min_seg_size_forward]
+  fwd_iat_total: [fwd_iat_tot, fwd_iat_total]
+  bwd_iat_total: [bwd_iat_tot, bwd_iat_total]
+  urg_flag_count: [urg_flag_cnt, urg_flag_count]
+  syn_flag_count: [syn_flag_cnt, syn_flag_count]
+  fin_flag_count: [fin_flag_cnt, fin_flag_count]
+  rst_flag_count: [rst_flag_cnt, rst_flag_count]
+  psh_flag_count: [psh_flag_cnt, psh_flag_count]
+  ack_flag_count: [ack_flag_cnt, ack_flag_count]
+  cwe_flag_count: [cwe_flag_count, cwr_flag_count]
+  ece_flag_count: [ece_flag_cnt, ece_flag_count]
+
+# Features named in Table 2 of the paper (CIC-DDoS2019 waterfall, see SPEC D3).
+# Used only to build comparison_shap_table2.csv, never to pre-select features.
+paper_table2_features:
+  - {rank: 1,  canonical: max_packet_length,           shap: +2.79}
+  - {rank: 2,  canonical: fwd_packet_length_max,       shap: +1.32}
+  - {rank: 3,  canonical: bwd_iat_max,                 shap: -1.31, note: "name missing in the PDF table; recovered from prose p.20"}
+  - {rank: 4,  canonical: UNKNOWN,                     shap: +1.06, note: "name lost to a typesetting error; only 18/19 identifiable"}
+  - {rank: 5,  canonical: average_packet_size,         shap: +1.04}
+  - {rank: 6,  canonical: inbound,                     shap: -1.01}
+  - {rank: 7,  canonical: min_packet_length,           shap: +1.01}
+  - {rank: 8,  canonical: total_length_of_fwd_packets, shap: +0.98}
+  - {rank: 9,  canonical: packet_length_mean,          shap: +0.80}
+  - {rank: 10, canonical: avg_fwd_segment_size,        shap: +0.65}
+  - {rank: 11, canonical: subflow_fwd_bytes,           shap: +0.61}
+  - {rank: 12, canonical: fwd_packet_length_min,       shap: +0.59}
+  - {rank: 13, canonical: fwd_iat_total,               shap: -0.51}
+  - {rank: 14, canonical: protocol,                    shap: +0.48}
+  - {rank: 15, canonical: bwd_packets_per_s,           shap: +0.43}
+  - {rank: 16, canonical: fwd_packet_length_mean,      shap: +0.29}
+  - {rank: 17, canonical: min_seg_size_forward,        shap: +0.21}
+  - {rank: 18, canonical: urg_flag_count,              shap: -0.20}
+  - {rank: 19, canonical: flow_duration,               shap: +0.19}
+paper_table2_other_features_shap: -0.46   # "21 other features" -> implied input dim = 40
+paper_table2_expected_value: -15.887
+paper_table2_model_output: -6.926
+
+# What the paper reports for CIC-DDoS2019 -- in TWO columns, because it reports
+# two different sets of numbers and never reconciles them (SPEC Part C).
+# Comparing against only the headline would quietly pick the flattering pair.
+paper_reported_metrics:
+  headline:                  # Abstract p.1, section 3 p.18, Conclusion p.26
+    accuracy: 0.9995
+    recall: 0.9998
+    f1: 0.994               # printed as "0.994%", a unit error in the paper
+    source: "Abstract, section 3 p.18, Conclusion p.26"
+  body:                      # final paragraph of section 3, p.26
+    accuracy: 0.95
+    precision: 0.99
+    source: "section 3, final paragraph, p.26"
+  figure_11:                 # bar chart comparing the three architectures
+    cnn_accuracy: 0.97
+    mlp_accuracy: 0.979
+    cnn_mlp_opt_accuracy: 0.999
+    source: "Fig 11, p.23"
+  notes:
+    - "The paper gives no split protocol, so its numbers are not measured on a
+       held-out set that is known to be disjoint from training."
+    - "Its Fig 6 pipeline up-samples before feature selection and never mentions
+       a split, which would place duplicated minority rows on both sides."
+    - "F1 is printed as 0.994% -- percent sign against a value already in [0,1]."

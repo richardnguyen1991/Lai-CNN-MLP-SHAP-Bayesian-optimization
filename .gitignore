@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Generated: rebuild with scripts/build_kaggle_cell.py
+dist/
+
+# Run artifacts belong on S3, never in git
+work/
+artifacts/
+*.npy
+*.pt
+*.joblib
+*.db
+
+# Never commit these
+kaggle.json
+*_injected.ipynb
+bootstrap_manifest.json

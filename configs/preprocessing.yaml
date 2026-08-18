@@ -1,0 +1,26 @@
+# Every statistic here is fitted on TRAIN ONLY. Val and test are transformed
+# with the train-fitted values and never contribute to them.
+
+# Column rejection, decided on the training split
+max_nan_ratio: 0.5          # missing = null + NaN + +/-Inf
+drop_zero_variance: true
+drop_non_numeric: true
+
+# CICFlowMeter emits literal Infinity in Flow Bytes/s and Flow Packets/s
+# whenever flow duration is zero. Those become NaN, then take the train median.
+inf_to_nan: true
+impute_strategy: median
+
+scaler: standard            # standard | quantile
+dtype: float32
+
+# Shards keep peak RSS bounded and let a resumed session memory-map instead of
+# rebuilding the cache. 256 MB is a compromise between file count and the cost
+# of touching a whole shard to read one batch.
+shard_target_mb: 256
+max_shards_per_split: 64
+
+# After transforming, assert nothing non-finite survived. A NaN reaching the
+# optimiser turns every weight into NaN on the first backward pass, and the run
+# would look like it is training normally for 100 epochs.
+assert_finite_after_transform: true

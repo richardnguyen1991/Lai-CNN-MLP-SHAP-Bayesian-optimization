@@ -1,0 +1,15 @@
+# The leakage measurement. Reproduces Fig 6 of the paper: up-sample to balance
+# the classes, THEN split -- so copies of the same BENIGN row land on both sides.
+#
+# Deliberately invalid as a result. Its only purpose is the delta against main,
+# which is this thesis's estimate of how much of 99.95% is leakage.
+_variant: paperlike
+_description: >
+  Up-sampling before the split, as section 2.5 of the paper describes. Metrics
+  from this run must never be quoted as a clean result.
+_runs_bayesian_search: false
+leakage:
+  upsample_before_split: true
+  assert_zero_cross_split_duplicates: false   # the duplicates are the point
+subsample:
+  policy: none        # up-sampling replaces subsampling here

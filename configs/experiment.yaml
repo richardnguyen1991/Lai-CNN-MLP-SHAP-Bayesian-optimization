@@ -1,0 +1,149 @@
+# Master experiment config. Variant overrides live in configs/variants/.
+# Every value here is recorded into run_config.json so the thesis can cite it.
+
+run:
+  task: binary_flow_classification
+  dataset: cicddos2019          # InSDN is out of scope for this study
+  variant: main
+  seed: 42
+
+device:
+  force_cpu: true               # the paper's AMD RX 550 has no CUDA either
+  cpu_threads: auto
+  ram_budget_gb: 12
+
+# --------------------------------------------------------------------------
+# Split
+# --------------------------------------------------------------------------
+# All 18 capture files contain BENIGN, but file ~ attack family, so any
+# file-level grouping evaluates on families never seen in training. That is a
+# different question from the one the paper answers, so the primary protocol is
+# temporal-within-file: every family and both classes stay present in all three
+# splits, while adjacent flows from one burst cannot straddle a boundary.
+#
+# The cut is stratified by (file, raw label) because BENIGN is clustered in
+# time, not spread through the captures: 34,822 of the 35,790 BENIGN rows in
+# 03-11/Syn.parquet sit at the tail, and 20,866 of 25,247 do the same in
+# 01-12/TFTP.parquet. Cutting each file as one stream leaves validation with
+# roughly 2,900 BENIGN rows out of 8.5M, far too thin to optimise Macro-F1 on.
+split:
+  strategy: temporal_stratified_within_file
+  # temporal_stratified_within_file | temporal_within_file | group_by_file
+  # | by_capture_day | random_stratified
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  deduplicate_before_split: true
+  # Fail rather than silently produce a split with one class missing.
+  require_both_classes_per_split: true
+  min_benign_per_split: 1000
+
+# --------------------------------------------------------------------------
+# Subsampling (decision B2)
+# --------------------------------------------------------------------------
+# 70.4M rows x 100 epochs is roughly 115 hours per run on Kaggle CPU, and the
+# float32 cache is 21.8 GiB against a 12 GiB budget. Training therefore runs on
+# a subsample; evaluation does not.
+#
+# keep_all_benign: every BENIGN row survives (only 113,828 exist in total, and
+# they are the scarce class), attacks are sampled down to attack_per_benign.
+#
+# TEST IS DELIBERATELY EXCLUDED. It keeps the natural 1:618 prior, so the
+# headline metrics are measured at the real operating point and carry no
+# prior-shift caveat. Test is a single forward pass, so its size costs little.
+subsample:
+  policy: keep_all_benign
+  attack_per_benign: 30
+  apply_to: [train, val]
+  stratify_by: [source_file, raw_label]
+  record_sampling_rates: true   # written to split_manifest.json
+
+# --------------------------------------------------------------------------
+# Leakage controls
+# --------------------------------------------------------------------------
+leakage:
+  hash_excludes_identifiers: true   # flow_id/IP/timestamp would make every row unique
+  assert_zero_cross_split_duplicates: true
+  # The `paperlike` variant deliberately violates this to quantify the effect;
+  # it is the only variant allowed to set upsample_before_split.
+  upsample_before_split: false
+
+# --------------------------------------------------------------------------
+# SHAP feature selection
+# --------------------------------------------------------------------------
+# top_k is 40, not 20. Table 1 and Table 2 of the paper each list 19 named
+# features plus a row reading "21 other features", so the model being explained
+# saw 19 + 21 = 40 inputs. See SPEC finding D2: the paper never states how it
+# went from 88 raw features to those 40.
+#
+# The surrogate is a gradient-boosted tree, not the CNN-MLP. The paper does not
+# say which explainer it used; KernelExplainer over a neural net at this scale
+# is not feasible on CPU, so TreeExplainer on a surrogate does the selection and
+# explainability.py later explains the actual CNN-MLP with GradientExplainer.
+shap:
+  enabled: true
+  feature_set: top40            # top40 | top20 | all  (variant axis)
+  selection_mode: top_k         # top_k | cumulative_ratio
+  top_k: 40
+  cumulative_ratio: 0.95
+
+  # Fitted on TRAIN ONLY. Computing SHAP on val or test and selecting from it
+  # would leak the evaluation data into the feature set.
+  sample_rows: 200000           # stratified sample used to fit the surrogate
+  explain_rows: 50000           # subset the SHAP values are computed over
+  beeswarm_rows: 5000           # retained for the summary plot
+
+  surrogate:
+    library: lightgbm
+    n_estimators: 200
+    num_leaves: 63
+    learning_rate: 0.1
+    min_child_samples: 50
+
+  # See SPEC finding D3: the paper's tables are single-instance waterfalls, not
+  # global summaries -- their values sum to f(x) - E[f(x)] to three decimals.
+  # A global mean|SHAP| ranking is therefore not comparable to them directly,
+  # so one instance is decomposed the same way for an honest comparison.
+  waterfall:
+    enabled: true
+    max_display: 20             # 19 named rows + "N other features", as the paper
+
+# --------------------------------------------------------------------------
+# Final training -- hard constraints
+# --------------------------------------------------------------------------
+# Always 100 epochs. The final model is the one after epoch 100, never the
+# best-validation checkpoint: selecting on validation and then reporting test
+# turns validation into a second training signal. model_best_val.pt is written
+# for observation only.
+training:
+  epochs: 100
+  batch_size: 4096
+  learning_rate: 0.001
+  optimizer: adam
+  weight_decay: 0.0            # replaced by the Bayesian search result
+  loss: bce_with_logits
+  early_stopping: false
+  decision_threshold: 0.5
+  imbalance_handling: none
+  # Validation runs every epoch to draw the learning curve; it never selects
+  # the final model.
+  eval_every_epoch: true
+
+# --------------------------------------------------------------------------
+# Session and checkpointing
+# --------------------------------------------------------------------------
+# A Kaggle CPU session lasts at most 12 hours and can be cancelled sooner. Work
+# is checkpointed by epoch so a cancelled session never repeats a completed one.
+session:
+  checkpoint_interval_epochs: 5
+  session_time_budget_minutes: 690      # 11.5 h, inside the 12 h limit
+  safety_margin_minutes: 25             # stop and upload before the cut-off
+  presigned_ttl_hours: 13               # IAM user key, so a long TTL is allowed
+  max_sessions: 20
+  # Cancellation by the time limit is a normal outcome, not a failure, as long
+  # as the checkpoint is valid.
+  resume_required_exit_code: 0
+
+paths:
+  input_root: /kaggle/input/cicddos2019-parquet
+  work_dir: /kaggle/working/run

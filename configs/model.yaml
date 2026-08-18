@@ -1,0 +1,39 @@
+# Architecture, held as close to the paper as the data allows.
+#
+# Fig 2 / Algorithm 1 give the MLP branch as Dense(128) -> Dense(64), and Fig 4 /
+# Algorithm 2 give the CNN branch as Conv(32, 3x3, same) -> MaxPool(2x2) ->
+# Conv(64, 3x3, same) -> MaxPool(2x2) -> Flatten -> Dense(128). Those widths are
+# reproduced exactly.
+#
+# What the paper does NOT describe is how the two branches join: it has a figure
+# for each branch and none for the junction. Late concatenation is our choice and
+# is recorded as such (SPEC finding B15).
+
+architecture: cnn_mlp          # cnn_mlp | mlp_only | cnn_only  (ablation axis)
+
+# Conv1D, not Conv2D. The paper specifies 3x3 kernels and 2x2 pooling, which
+# describe an image; the input is a 1-D flow feature vector. kernel_size 3 with
+# 'same' padding keeps the paper's intent and is valid for the data.
+conv_mode: conv1d              # conv1d | conv2d_reshape (ablation only)
+
+cnn_filters_1: 32
+cnn_filters_2: 64
+cnn_kernel_size: 3
+cnn_dense: 128
+
+mlp_units_1: 128
+mlp_units_2: 64
+
+fusion_dim: 128
+dropout: 0.2                   # not in the paper at all; Bayesian search tunes it
+activation: relu               # the paper states ReLU
+
+# Single logit + BCEWithLogitsLoss, matching the paper's sigmoid output for the
+# binary case. No pos_weight: imbalance handling is a separate experiment.
+loss: bce_with_logits
+
+# Expected parameter counts at the values above, asserted by the unit tests so a
+# silent architecture drift cannot pass review.
+expected_param_count:
+  cnn_mlp_k20: 83201
+  cnn_mlp_k40: 126721

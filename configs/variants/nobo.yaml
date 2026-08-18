@@ -1,0 +1,7 @@
+# Ablation: the full architecture at the config defaults, with no Bayesian
+# search at all. Isolates what the "Optimizer-equipped" part of the paper's
+# title is actually worth.
+_variant: nobo
+_description: CNN+MLP with default hyperparameters; no search.
+_runs_bayesian_search: false
+_skip_bayesian_phase: true
