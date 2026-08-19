@@ -425,3 +425,107 @@ def test_the_budget_still_allows_a_useful_amount_of_work():
     # immediately and never advance an epoch.
     session = _experiment()["session"]
     assert session["session_time_budget_minutes"] > session["safety_margin_minutes"] * 4
+
+
+# --------------------------------------------------------------------------
+# What counts as a different experiment
+# --------------------------------------------------------------------------
+# The run id carries a fingerprint of the configs, and a run whose fingerprint
+# has changed is abandoned. Hashing the raw bytes could not tell a changed
+# model from a changed timeout, so retiming a session would have stranded a
+# finished preparation, feature selection and Bayesian search under an id
+# nothing would look at again.
+
+def _load_state_module():
+    path = REPO_ROOT / "scripts" / "workflow_state.py"
+    spec = importlib.util.spec_from_file_location("workflow_state", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["workflow_state"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+workflow_state = _load_state_module()
+
+
+def _configs(tmp_path, experiment):
+    configs = tmp_path / "configs"
+    configs.mkdir(parents=True, exist_ok=True)
+    (configs / "experiment.yaml").write_text(
+        yaml.safe_dump(experiment), encoding="utf-8")
+    return tmp_path
+
+
+BASE_EXPERIMENT = {
+    "run": {"dataset": "cicddos2019"},
+    "training": {"epochs": 100, "batch_size": 4096, "learning_rate": 0.001},
+    "session": {"session_time_budget_minutes": 690, "max_sessions": 20},
+    "paths": {"input_root": "/kaggle/input/cicddos2019-parquet"},
+}
+
+
+def _fingerprint(monkeypatch, tmp_path, experiment, variant="main"):
+    monkeypatch.setattr(workflow_state, "REPO_ROOT", _configs(tmp_path, experiment))
+    return workflow_state.config_fingerprint(variant)
+
+
+def test_retiming_a_session_does_not_start_a_new_run(monkeypatch, tmp_path):
+    before = _fingerprint(monkeypatch, tmp_path / "a", BASE_EXPERIMENT)
+
+    retimed = json.loads(json.dumps(BASE_EXPERIMENT))
+    retimed["session"]["session_time_budget_minutes"] = 300
+    after = _fingerprint(monkeypatch, tmp_path / "b", retimed)
+
+    assert before == after
+
+
+def test_moving_the_input_path_does_not_start_a_new_run(monkeypatch, tmp_path):
+    before = _fingerprint(monkeypatch, tmp_path / "a", BASE_EXPERIMENT)
+
+    moved = json.loads(json.dumps(BASE_EXPERIMENT))
+    moved["paths"]["input_root"] = "/kaggle/input/datasets/owner/name/versions/1"
+    after = _fingerprint(monkeypatch, tmp_path / "b", moved)
+
+    assert before == after
+
+
+@pytest.mark.parametrize("section, key, value", [
+    ("training", "epochs", 50),
+    ("training", "batch_size", 512),
+    ("training", "learning_rate", 0.01),
+    ("run", "dataset", "insdn"),
+])
+def test_changing_the_experiment_does_start_a_new_run(section, key, value,
+                                                      monkeypatch, tmp_path):
+    before = _fingerprint(monkeypatch, tmp_path / "a", BASE_EXPERIMENT)
+
+    changed = json.loads(json.dumps(BASE_EXPERIMENT))
+    changed[section][key] = value
+    after = _fingerprint(monkeypatch, tmp_path / "b", changed)
+
+    assert before != after
+
+
+def test_each_variant_gets_its_own_run(monkeypatch, tmp_path):
+    main = _fingerprint(monkeypatch, tmp_path / "a", BASE_EXPERIMENT, variant="main")
+    other = _fingerprint(monkeypatch, tmp_path / "b", BASE_EXPERIMENT, variant="paperlike")
+    assert main != other
+
+
+def test_a_comment_is_not_a_new_experiment(monkeypatch, tmp_path):
+    # Hashing bytes made every edit to a comment orphan the run in progress.
+    monkeypatch.setattr(workflow_state, "REPO_ROOT", _configs(tmp_path / "a", BASE_EXPERIMENT))
+    before = workflow_state.config_fingerprint("main")
+
+    root = _configs(tmp_path / "b", BASE_EXPERIMENT)
+    path = root / "configs" / "experiment.yaml"
+    path.write_text("# explaining why\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(workflow_state, "REPO_ROOT", root)
+
+    assert workflow_state.config_fingerprint("main") == before
+
+
+def test_the_operational_sections_are_named_explicitly():
+    # Widening this set silently would let a real experimental change reuse a
+    # run id and mix two experiments into one set of artifacts.
+    assert workflow_state.OPERATIONAL_SECTIONS == {"session", "paths"}

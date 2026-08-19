@@ -21,6 +21,10 @@ on:
         description: 'true/false — start a fresh run_id instead of resuming'
         required: false
         default: 'false'
+      run_id:
+        description: 'adopt this run id verbatim, instead of deriving one'
+        required: false
+        default: ''
   # DISABLED until the resume check passes on Kaggle. Merging this with the cron
   # live would start a session every 3 hours from the moment of the push, before
   # anyone has confirmed a cancelled session resumes at the right epoch. Until
@@ -117,6 +121,7 @@ jobs:
         run: python scripts/workflow_state.py
         env:
           FORCE_NEW_RUN: ${{ github.event.inputs.force_new_run || 'false' }}
+          RUN_ID_OVERRIDE: ${{ github.event.inputs.run_id || '' }}
 
       - name: Stop — the run is complete
         if: steps.state.outputs.finished == 'true'
