@@ -57,7 +57,10 @@ env:
 jobs:
   session:
     runs-on: ubuntu-latest
-    timeout-minutes: 780          # 13 h: one Kaggle session plus polling overhead
+    # A GitHub-hosted job is killed at 6 h whatever this says, so it stays
+    # below that: the point is to outlive a 5 h Kaggle session and still
+    # reach the steps that record it and chain the next one.
+    timeout-minutes: 350
 
     steps:
       - uses: actions/checkout@v4
@@ -161,7 +164,7 @@ jobs:
         id: push
         run: |
           kaggle kernels push -p build
-          python scripts/poll_kernel.py --kernel "$KAGGLE_KERNEL" --timeout-minutes 730
+          python scripts/poll_kernel.py --kernel "$KAGGLE_KERNEL" --timeout-minutes 330
 
       - name: Show the kernel log
         # A failed kernel's traceback lives on Kaggle, not in this log. Without

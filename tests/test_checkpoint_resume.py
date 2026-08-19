@@ -290,3 +290,70 @@ def test_best_val_checkpoint_is_not_the_final_model(tmp_path):
     if state["best_val_epoch"] != TOTAL_EPOCHS:
         best = _weights(out, "model_best_val.pt")
         assert any(not torch.allclose(final[n], best[n]) for n in final)
+
+
+# --------------------------------------------------------------------------
+# A state that exists before training does
+# --------------------------------------------------------------------------
+# The session sequencer records the phase in training_state.json, so the file
+# existing is no longer proof that there is a checkpoint behind it. On Kaggle
+# this surfaced twice: once as a resume that looked for a model_last.pt nobody
+# had written, and once as a config_hash mismatch that refused the run.
+
+def _sequencer_state(out: Path) -> Path:
+    checkpoints = out / "checkpoints"
+    checkpoints.mkdir(parents=True, exist_ok=True)
+    payload = TrainingState(
+        run_id="run-seq", session_id="sequencer", dataset_name="cicddos2019",
+        phase="final_train", total_epochs=TOTAL_EPOCHS,
+    ).to_dict()
+    path = checkpoints / "training_state.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_a_state_written_before_any_epoch_is_not_mistaken_for_a_checkpoint(tmp_path):
+    cache = _make_cache(tmp_path)
+    out = tmp_path / "sequenced"
+    config = _make_config(tmp_path, budget_minutes=600, margin_minutes=1)
+    _sequencer_state(out)
+    assert not (out / "checkpoints" / "model_last.pt").exists()
+
+    assert train_module.run(cache, out, REPO_ROOT, "run-seq", config) == 0
+
+    history = json.loads((out / "checkpoints" / "history.json").read_text(encoding="utf-8"))
+    assert [e["epoch"] for e in history] == list(range(1, TOTAL_EPOCHS + 1))
+    assert validate_history(history, TOTAL_EPOCHS) == []
+
+
+def test_a_sequencer_state_carries_no_hashes_and_so_passes_the_guard(tmp_path):
+    # publish_phase leaves the hashes empty on purpose. They belong to the
+    # training run, which computes them over experiment, model and best_params
+    # together; a value derived any other way reads to verify_resumable as a
+    # changed experiment and the run is refused.
+    cache = _make_cache(tmp_path)
+    out = tmp_path / "nohash"
+    config = _make_config(tmp_path, budget_minutes=600, margin_minutes=1)
+    path = _sequencer_state(out)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["config_hash"] == ""
+    assert train_module.run(cache, out, REPO_ROOT, "run-nohash", config) == 0
+
+    # The training run fills them in, so a genuine later resume is still guarded.
+    assert json.loads(path.read_text(encoding="utf-8"))["config_hash"]
+
+
+def test_a_real_checkpoint_is_still_protected_from_a_changed_experiment(tmp_path):
+    cache = _make_cache(tmp_path)
+    out = tmp_path / "guarded"
+    config = _make_config(tmp_path, budget_minutes=600, margin_minutes=1)
+    train_module.run(cache, out, REPO_ROOT, "run-guard", config)
+
+    path = out / "checkpoints" / "training_state.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["current_epoch"] = 4
+    payload["config_hash"] = "a-different-experiment-entirely"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="the experiment has changed"):
+        train_module.run(cache, out, REPO_ROOT, "run-guard", config)

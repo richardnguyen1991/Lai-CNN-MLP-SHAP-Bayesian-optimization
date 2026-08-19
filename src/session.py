@@ -110,7 +110,11 @@ class Session:
                 dataset_name=self.experiment["run"]["dataset"],
                 phase=phase,
                 total_epochs=self.experiment["training"]["epochs"],
-                config_hash=config_hash(self.experiment),
+                # No hashes. They belong to the training run and are computed
+                # by train.py over {experiment, model, best_params}; a value
+                # derived any other way reads to verify_resumable as a changed
+                # experiment and refuses the run. Empty means "training has not
+                # started", which is exactly true here.
             )
 
         atomic_write_json(path, state.to_dict())

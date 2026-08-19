@@ -372,3 +372,56 @@ def test_output_with_no_status_line_is_its_own_outcome():
 
 def test_the_settled_sets_do_not_overlap():
     assert not (poll_kernel.SETTLED_OK & poll_kernel.SETTLED_BAD)
+
+
+# --------------------------------------------------------------------------
+# The six hour ceiling
+# --------------------------------------------------------------------------
+# A GitHub-hosted job is killed at 6 hours of execution no matter what
+# timeout-minutes says. A killed job never reaches the steps that record the
+# session or dispatch the next one, so the run stops without a word. One run
+# was cancelled at 6h00m20s with the kernel still going, and the chain died
+# there while the configuration claimed a 13 hour budget.
+
+import re  # noqa: E402
+
+import yaml  # noqa: E402
+
+GITHUB_JOB_CEILING_MINUTES = 360
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "run-kaggle.yml"
+
+
+def _workflow():
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _experiment():
+    return yaml.safe_load(
+        (REPO_ROOT / "configs" / "experiment.yaml").read_text(encoding="utf-8"))
+
+
+def test_the_actions_job_stays_under_the_ceiling_github_enforces():
+    timeout = _workflow()["jobs"]["session"]["timeout-minutes"]
+    assert timeout < GITHUB_JOB_CEILING_MINUTES
+
+
+def test_the_kernel_budget_leaves_the_watcher_room_to_finish():
+    # The watcher has to outlive the kernel, or nothing records the session.
+    session = _experiment()["session"]
+    timeout = _workflow()["jobs"]["session"]["timeout-minutes"]
+    assert session["session_time_budget_minutes"] < timeout
+
+
+def test_the_poll_gives_up_before_the_job_is_killed():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(r"poll_kernel\.py[^\n]*--timeout-minutes\s+(\d+)", text)
+    assert match, "the poll step no longer passes --timeout-minutes"
+    assert int(match.group(1)) < _workflow()["jobs"]["session"]["timeout-minutes"]
+
+
+def test_the_budget_still_allows_a_useful_amount_of_work():
+    # Guarding the ceiling must not be satisfied by shrinking the budget to
+    # nothing: a session too short to clear its safety margin would checkpoint
+    # immediately and never advance an epoch.
+    session = _experiment()["session"]
+    assert session["session_time_budget_minutes"] > session["safety_margin_minutes"] * 4

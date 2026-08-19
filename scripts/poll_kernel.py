@@ -70,7 +70,7 @@ def read_status(kernel: str):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--kernel", required=True)
-    parser.add_argument("--timeout-minutes", type=float, default=730)
+    parser.add_argument("--timeout-minutes", type=float, default=330)
     parser.add_argument("--initial-interval", type=float, default=30)
     parser.add_argument("--max-interval", type=float, default=300)
     args = parser.parse_args()

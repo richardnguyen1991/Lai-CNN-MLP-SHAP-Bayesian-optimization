@@ -233,3 +233,18 @@ def test_a_remote_cache_is_downloaded_when_nothing_is_local(tmp_path):
 
     assert session.pull_cache() is True
     assert (session.work / "cache" / "preprocess" / "train_000.npz").exists()
+
+
+def test_publishing_a_phase_leaves_the_hashes_to_the_training_run(tmp_path):
+    # train.py derives config_hash from experiment, model and best_params
+    # together. A value computed any other way here is read by
+    # verify_resumable as a changed experiment, and the final_train phase
+    # refuses to start -- which is what happened on the first session that got
+    # that far. Empty means training has not begun, which is exactly true.
+    session = make_session(tmp_path)
+    session.publish_phase("final_train")
+
+    published = json.loads(session.io.uploaded[STATE_KEY])
+    assert published["config_hash"] == ""
+    assert published["feature_schema_hash"] == ""
+    assert published["current_epoch"] == 0

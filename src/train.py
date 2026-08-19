@@ -178,6 +178,17 @@ def run(
             phase="final_train", total_epochs=training_cfg["epochs"],
             **expected_hashes,
         )
+    elif state.current_epoch == 0:
+        # The session sequencer writes a state to record the phase before any
+        # training has happened, so a state file is no longer proof that there
+        # is a checkpoint to restore. Adopt it and start from epoch 1: calling
+        # restore() here would look for a model_last.pt that was never written.
+        state.phase = "final_train"
+        state.total_epochs = training_cfg["epochs"]
+        state.session_id = session_id
+        for name, value in expected_hashes.items():
+            setattr(state, name, value)
+        print("state recorded by the sequencer; starting training at epoch 1")
     else:
         manager.verify_resumable(state, expected_hashes)
         if state.current_epoch >= training_cfg["epochs"]:

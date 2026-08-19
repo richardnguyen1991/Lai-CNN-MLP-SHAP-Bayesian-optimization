@@ -136,7 +136,12 @@ training:
 # is checkpointed by epoch so a cancelled session never repeats a completed one.
 session:
   checkpoint_interval_epochs: 5
-  session_time_budget_minutes: 690      # 11.5 h, inside the 12 h limit
+  # 5 h. The binding limit is GitHub, not Kaggle: a hosted Actions job is
+  # killed at 6 hours of execution however large timeout-minutes is, and a
+  # killed job never records the session or dispatches the next one -- the
+  # run simply stops. The watcher has to outlive the kernel it watches, so
+  # the kernel gets 5 h and the job is given room for it plus overhead.
+  session_time_budget_minutes: 300
   safety_margin_minutes: 25             # stop and upload before the cut-off
   presigned_ttl_hours: 13               # IAM user key, so a long TTL is allowed
   max_sessions: 20
